@@ -19,8 +19,6 @@ add_executable(KAYRA
         Windows/Main_Window.h
         Windows/Widgets_Controls.cpp
         Windows/Widgets_Controls.h
-        Windows/backend.h
-        Windows/backend.cpp
 )
 
 # --- 3. Add the GLAD Library (Using Docker's system paths) ---

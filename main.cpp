@@ -4,9 +4,6 @@
 #include "dependencies/imgui/imgui_impl_opengl3.h"
 #include <GLFW/glfw3.h>
 #include "Windows/Main_Window.h"
-#include "Windows/backend.h"
-
-static char mavsdk_connection_string[128] = "udpin://0.0.0.0:14540";
 
 
 int main(void)
@@ -39,7 +36,7 @@ int main(void)
 #endif
 
     /* Create a windowed mode window and its OpenGL context */
-    GLFWwindow* window = glfwCreateWindow(900, 900, "KAYRA", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "KAYRA", NULL, NULL);
     if (!window)
     {
         glfwTerminate();
@@ -91,24 +88,9 @@ int main(void)
         ImGui::NewFrame();
 
         //Mycode
-        ImGui::Begin("window");
-
-        ImGui::InputText("connection", mavsdk_connection_string, IM_ARRAYSIZE(mavsdk_connection_string));
-        if(ImGui::Button("connect", ImVec2(200,40))){
-            backend::mavsdk_connect_requested = true;
-        }
-        ImGui::Text("Relative Altitude: %.2f m", backend::relative_altitude.load());
-        ImGui::End();
         MyWindow::Mycode();
 
-        if (backend::mavsdk_connect_requested && !backend::mavsdk_connected) {
-            backend::mavsdk_connect_requested = false;
-            backend::mavsdk_connected = true;
-            backend::mavsdk_connection(mavsdk_connection_string);
-        }
-        
-
-        // Renderings
+        // Rendering
         ImGui::Render();
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
