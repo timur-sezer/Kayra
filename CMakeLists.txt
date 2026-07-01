@@ -6,10 +6,13 @@ set(CMAKE_BUILD_TYPE Debug)
 # Set C++ standard to C++17
 set(CMAKE_CXX_STANDARD 17)
 
-# Find GLFW package
+# --- 1. Find Required Packages ---
 find_package(glfw3 REQUIRED)
+find_package(MAVSDK REQUIRED)
+find_package(OpenCV REQUIRED) # Added OpenCV
+find_package(OpenGL REQUIRED) # Ensure OpenGL is found for linking
 
-# Add the executable
+# --- 2. Add the Executable ---
 add_executable(KAYRA
         main.cpp
         Windows/Main_Window.cpp
@@ -17,15 +20,15 @@ add_executable(KAYRA
         Windows/Widgets_Controls.cpp
         Windows/Widgets_Controls.h
         Windows/backend.h
-        Windows/backend.cpp)
+        Windows/backend.cpp
+)
 
-# Add the Glad library
-add_library(glad STATIC dependencies/src/glad.c)
-target_include_directories(glad PUBLIC dependencies/include)
+# --- 3. Add the GLAD Library (Using Docker's system paths) ---
+add_library(glad STATIC /usr/local/src/glad.c)
+target_include_directories(glad PUBLIC /usr/local/include)
 
-find_package(MAVSDK REQUIRED)
-
-# Add the Imgui library
+# --- 4. Add the ImGui Library ---
+# (Assuming 'dependencies/imgui' is mounted into the container via volume)
 add_library(imgui STATIC 
         dependencies/imgui/imgui.cpp
         dependencies/imgui/imgui_tables.cpp
@@ -34,14 +37,24 @@ add_library(imgui STATIC
         dependencies/imgui/imgui_widgets.cpp
         dependencies/imgui/imgui_impl_glfw.cpp
         dependencies/imgui/imgui_impl_opengl3.cpp
-        )
+)
 target_include_directories(imgui PUBLIC dependencies/imgui)
 
-# Link GLFW and Glad libraries
-target_link_libraries(KAYRA PRIVATE MAVSDK::mavsdk glfw glad dl imgui)
+# --- 5. Link Everything Together ---
+target_link_libraries(KAYRA 
+    PRIVATE 
+    MAVSDK::mavsdk 
+    glfw 
+    glad 
+    dl 
+    imgui
+    ${OpenCV_LIBS} # Link OpenCV libraries
+    OpenGL::GL     # Link System OpenGL
+)
 
+# --- 6. Compile Options ---
 if(NOT MSVC)
-    add_compile_options(KAYRA PRIVATE -Wall -Wextra)
+    target_compile_options(KAYRA PRIVATE -Wall -Wextra)
 else()
-    add_compile_options(KAYRA PRIVATE -W2)
+    target_compile_options(KAYRA PRIVATE -W2)
 endif()
