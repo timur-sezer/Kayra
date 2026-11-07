@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 #include <cstdio>
 #include "Windows/Main_Window.h"
+#include "Windows/backend.h"
 
 #ifndef KAYRA_ASSETS_DIR
 #define KAYRA_ASSETS_DIR "../assets"
@@ -40,7 +41,7 @@ int main(void)
 #endif
 
     /* Create a windowed mode window and its OpenGL context */
-    GLFWwindow* window = glfwCreateWindow(800, 600, "KAYRA", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(1600, 900, "KAYRA", NULL, NULL);
     if (!window)
     {
         glfwTerminate();
@@ -129,6 +130,7 @@ int main(void)
     }
 
     // Cleanup
+    backend::shutdown();   // stop telemetry before tearing down the GUI
     MyWindow::Shutdown();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

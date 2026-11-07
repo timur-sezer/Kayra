@@ -13,7 +13,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(glfw3 REQUIRED)
 find_package(OpenGL REQUIRED)
 
-# MAVSDK and OpenCV are not used by the GUI yet; link them when available.
+# MAVSDK provides live telemetry; without it the GUI still builds and shows "built without MAVSDK".
+# OpenCV is not used yet.
 find_package(MAVSDK QUIET)
 find_package(OpenCV QUIET)
 
@@ -43,6 +44,8 @@ add_executable(KAYRA
         Windows/Widgets_Controls.h
         Windows/Attitude_Indicator.cpp
         Windows/Attitude_Indicator.h
+        Windows/backend.cpp
+        Windows/backend.h
 )
 
 # Absolute asset path so the program runs from any working directory
@@ -52,6 +55,9 @@ target_link_libraries(KAYRA PRIVATE glad imgui glfw OpenGL::GL ${CMAKE_DL_LIBS})
 
 if(MAVSDK_FOUND)
     target_link_libraries(KAYRA PRIVATE MAVSDK::mavsdk)
+    target_compile_definitions(KAYRA PRIVATE KAYRA_HAS_MAVSDK)
+else()
+    message(WARNING "MAVSDK not found: building without telemetry support")
 endif()
 if(OpenCV_FOUND)
     target_link_libraries(KAYRA PRIVATE ${OpenCV_LIBS})

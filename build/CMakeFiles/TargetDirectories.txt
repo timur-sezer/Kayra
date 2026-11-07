@@ -1,5 +1,0 @@
-/Users/sezer/Desktop/Github/Kayra/build/CMakeFiles/glad.dir
-/Users/sezer/Desktop/Github/Kayra/build/CMakeFiles/imgui.dir
-/Users/sezer/Desktop/Github/Kayra/build/CMakeFiles/KAYRA.dir
-/Users/sezer/Desktop/Github/Kayra/build/CMakeFiles/edit_cache.dir
-/Users/sezer/Desktop/Github/Kayra/build/CMakeFiles/rebuild_cache.dir
