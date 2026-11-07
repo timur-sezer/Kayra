@@ -1,34 +1,125 @@
 ﻿#include "Main_Window.h"
 #include "Widgets_Controls.h"
-#include "glad/glad.h"
+#include "Attitude_Indicator.h"
 #include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
+#include "imgui_internal.h"   // DockBuilder API
+#include <cstdint>
+#include <cstdio>
 #include <string>
 
+#ifndef KAYRA_ASSETS_DIR
+#define KAYRA_ASSETS_DIR "../assets"
+#endif
 
 using namespace Widgets_Controls;
 
 namespace MyWindow {
-    ImVec2 window_size;
+    static ImVec2 window_size;
+
+    // Textures are created once in Init() — loading them every frame leaks GPU memory.
+    static GLuint airspeed_bg = 0;
+    static GLuint airspeed_hand = 0;
+    static GLuint verticalspeed_bg = 0;
+    static GLuint verticalspeed_hand = 0;
+    static GLuint altitude_bg = 0;
+    static GLuint compass_bg = 0;
+    static GLuint compass_handle = 0;
+    static GLuint roll_bg = 0;
+    static GLuint roll_handle = 0;
+
+    static GLuint* const all_textures[] = {
+        &airspeed_bg, &airspeed_hand, &verticalspeed_bg, &verticalspeed_hand,
+        &altitude_bg, &compass_bg, &compass_handle, &roll_bg, &roll_handle,
+    };
+
+    static ImTextureID ToTexID(GLuint tex) { return (ImTextureID)(intptr_t)tex; }
+
+    static bool LoadAsset(const char* relative_path, GLuint* out_texture)
+    {
+        std::string path = std::string(KAYRA_ASSETS_DIR) + "/" + relative_path;
+        int w = 0, h = 0;
+        if (!LoadTextureFromFile(path.c_str(), out_texture, &w, &h)) {
+            fprintf(stderr, "KAYRA: failed to load texture '%s'\n", path.c_str());
+            return false;
+        }
+        return true;
+    }
+
+    bool Init()
+    {
+        embraceTheDarkness();
+
+        bool ok = true;
+        ok &= LoadAsset("images/ais/ais_case_v10.png", &airspeed_bg);
+        ok &= LoadAsset("images/ais/ais_hand_v3.png",  &airspeed_hand);
+        ok &= LoadAsset("images/vsi/vsi_case.png",     &verticalspeed_bg);
+        ok &= LoadAsset("images/vsi/vsi_hand.png",     &verticalspeed_hand);
+        ok &= LoadAsset("images/alt/alt_case_v2.png",  &altitude_bg);
+        ok &= LoadAsset("images/hsi/hsi_v2.png",       &compass_bg);
+        ok &= LoadAsset("images/hsi/hsi_face_v2.png",  &compass_handle);
+        ok &= LoadAsset("images/tc/tc_case_v2.png",    &roll_bg);
+        ok &= LoadAsset("images/tc/tc_drone.png",      &roll_handle);
+        return ok;
+    }
+
+    void Shutdown()
+    {
+        for (GLuint* tex : all_textures) {
+            if (*tex) {
+                glDeleteTextures(1, tex);
+                *tex = 0;
+            }
+        }
+    }
+
+    // Builds the fixed default layout (standard cockpit "six-pack" order):
+    //   +-------------+-------------+-------------+
+    //   |  Air_Speed  |  Attitude   |  altitude   |
+    //   +-------------+-------------+-------------+
+    //   |    ROLL     |   Compass   | Vertical_Sp |
+    //   +-------------+-------------+-------------+
+    static void BuildDefaultLayout(ImGuiID dockspace_id, ImVec2 size)
+    {
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id, size);
+
+        ImGuiID top = 0, bottom = 0;
+        ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Up, 0.5f, &top, &bottom);
+
+        ImGuiID top_left = 0, top_rest = 0, top_mid = 0, top_right = 0;
+        ImGui::DockBuilderSplitNode(top, ImGuiDir_Left, 1.0f / 3.0f, &top_left, &top_rest);
+        ImGui::DockBuilderSplitNode(top_rest, ImGuiDir_Left, 0.5f, &top_mid, &top_right);
+
+        ImGuiID bottom_left = 0, bottom_rest = 0, bottom_mid = 0, bottom_right = 0;
+        ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Left, 1.0f / 3.0f, &bottom_left, &bottom_rest);
+        ImGui::DockBuilderSplitNode(bottom_rest, ImGuiDir_Left, 0.5f, &bottom_mid, &bottom_right);
+
+        ImGui::DockBuilderDockWindow("Air_Speed",                      top_left);
+        ImGui::DockBuilderDockWindow(AttitudeIndicator::kWindowTitle,  top_mid);
+        ImGui::DockBuilderDockWindow("altitude",                       top_right);
+        ImGui::DockBuilderDockWindow("ROLL",                           bottom_left);
+        ImGui::DockBuilderDockWindow("Compass",                        bottom_mid);
+        ImGui::DockBuilderDockWindow("Vertical_Speed",                 bottom_right);
+
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+
     void ShowMainDockSpace()
     {
-        static bool opt_fullscreen_persistant = true;
-        bool opt_fullscreen = opt_fullscreen_persistant;
-        static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
+        const ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
 
-        ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiDockNodeFlags_AutoHideTabBar;
-        if (opt_fullscreen)
-        {
-            ImGuiViewport* viewport = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(viewport->Pos);
-            ImGui::SetNextWindowSize(viewport->Size);
-            ImGui::SetNextWindowViewport(viewport->ID);
-            window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiDockNodeFlags_AutoHideTabBar;
-            window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-        }
+        // Note: ImGuiDockNodeFlags_* must not be mixed into ImGuiWindowFlags (different enums).
+        ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking;
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        // Work area excludes the main menu bar, so the dockspace doesn't sit under it.
+        ImGui::SetNextWindowPos(viewport->WorkPos);
+        ImGui::SetNextWindowSize(viewport->WorkSize);
+        ImGui::SetNextWindowViewport(viewport->ID);
+        window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+        window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 
-        // Important: We need a background window to act as the DockSpace host
+        // Background window that hosts the DockSpace
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 
@@ -36,293 +127,95 @@ namespace MyWindow {
         window_size = ImGui::GetWindowSize();
         ImGui::PopStyleVar(2);
 
-        // Set up the dockspace
         ImGuiIO& io = ImGui::GetIO();
         if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
         {
             ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+            static bool layout_built = false;
+            if (!layout_built) {
+                BuildDefaultLayout(dockspace_id, viewport->WorkSize);
+                layout_built = true;
+            }
             ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
         }
-        dockspace_flags ^= ImGuiDockNodeFlags_AutoHideTabBar;
 
         ImGui::End();
     }
 
+    // Draws a square gauge (background + rotated needle) centered in a window.
+    static void GaugeWindow(const char* title, bool* p_open, GLuint background, GLuint needle, float angle)
+    {
+        if (!*p_open)
+            return;
+
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+        if (ImGui::Begin(title, p_open, flags)) {
+            // Use the real free area under the title/tab bar instead of hard-coded offsets.
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            const ImVec2 avail  = ImGui::GetContentRegionAvail();
+
+            // Largest square that fits, with a small margin so the case doesn't touch the edges.
+            const float margin = 0.05f;
+            const float side   = (avail.x < avail.y ? avail.x : avail.y) * (1.0f - 2.0f * margin);
+
+            if (side > 1.0f) {
+                // Case and needle share one center, so the needle always pivots in the dial's middle.
+                const ImVec2 center(origin.x + avail.x * 0.5f, origin.y + avail.y * 0.5f);
+                const ImVec2 half(side * 0.5f, side * 0.5f);
+
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                dl->AddImage(ToTexID(background),
+                             ImVec2(center.x - half.x, center.y - half.y),
+                             ImVec2(center.x + half.x, center.y + half.y));
+                ImageRotated(ToTexID(needle), center, ImVec2(side, side), angle);
+            }
+
+            // Reserve the area so ImGui's layout knows it is used.
+            ImGui::Dummy(avail);
+        }
+        ImGui::End();
+    }
+
     void Mycode() {
-        embraceTheDarkness();
+        static bool ROLL_window_bool = true;
+        static bool Attitude_window_bool = true;
+        static bool Air_Speed_window_bool = true;
+        static bool Vertical_Speed_window_bool = true;
+        static bool altitude_window_bool = true;
+        static bool Compass_window_bool = true;
+        static bool BATTERY_window_bool = false;
+        static bool LOCATION_window_bool = false;
 
-        GLuint airspeed_bg;
-        GLuint airspeed_hand;
-        GLuint verticalspeed_bg;
-        GLuint verticalspeed_hand;
-        GLuint altitude_bg;
-        GLuint compass_bg;
-        GLuint compass_handle;
-        GLuint roll_bg;
-        GLuint roll_handle;
-        GLuint handle;
-        GLuint settings_icon;
+        ShowMainDockSpace();
 
-        int my_image_width;
-        int my_image_height;
-
-
-        bool ret  = LoadTextureFromFile("../assets/images/ais/ais_case_v10.png", &airspeed_bg, &my_image_width, &my_image_height);
-        bool ret0 = LoadTextureFromFile("../assets/images/ais/ais_hand_v3.png", &airspeed_hand, &my_image_width, &my_image_height);
-        bool ret1 = LoadTextureFromFile("../assets/images/vsi/vsi_case.png", &verticalspeed_bg, &my_image_width, &my_image_height);
-        bool ret2 = LoadTextureFromFile("../assets/images/vsi/vsi_hand.png", &verticalspeed_hand, &my_image_width, &my_image_height);
-        bool ret3 = LoadTextureFromFile("../assets/images/alt/alt_case_v2.png", &altitude_bg, &my_image_width, &my_image_height);
-        bool ret4 = LoadTextureFromFile("../assets/images/hsi/hsi_v2.png", &compass_bg, &my_image_width, &my_image_height);
-        bool ret5 = LoadTextureFromFile("../assets/images/hsi/hsi_face_v2.png", &compass_handle, &my_image_width, &my_image_height);
-        bool ret6 = LoadTextureFromFile("../assets/images/tc/tc_case_v2.png", &roll_bg, &my_image_width, &my_image_height);
-        bool ret7 = LoadTextureFromFile("../assets/images/tc/tc_drone.png", &roll_handle, &my_image_width, &my_image_height);
-        bool ret8 = LoadTextureFromFile("../assets/images/tc/tc_drone.png", &handle, &my_image_width, &my_image_height);
-        IM_ASSERT(ret && ret0 && ret1 && ret2 && ret3 && ret4 && ret5 && ret6 && ret7 && ret8);
-
-
-		static bool ROLL_window_bool = true;
-		static bool Air_Speed_window_bool = true;
-		static bool Vertical_Speed_window_bool = true;
-		static bool altitude_window_bool = true;
-		static bool PITCH_window_bool = true;
-		static bool Compass_window_bool = true;
-		static bool BATTERY_window_bool = false;
-		static bool LOCATION_window_bool = false;
-		static bool DATA_window_bool = false;
-
-
-		ShowMainDockSpace();
-
-        
         if (ImGui::BeginMainMenuBar())
         {
             if (ImGui::BeginMenu("OPEN-WINDOW"))
             {
-                if (ImGui::MenuItem("Vertical Speed")) {
-                    Vertical_Speed_window_bool = !Vertical_Speed_window_bool;
-                }
-                if (ImGui::MenuItem("Air Speed")) {
-                    Air_Speed_window_bool = !Air_Speed_window_bool;
-                }
-                if (ImGui::MenuItem("Altitude")) {
-                    altitude_window_bool = !altitude_window_bool;
-                }
-                if (ImGui::MenuItem("Compass")) {
-                    Compass_window_bool = !Compass_window_bool;
-                }
-                if (ImGui::MenuItem("BATTERY-SETTINGS")) {
-                    BATTERY_window_bool = !BATTERY_window_bool;
-                }
-                if (ImGui::MenuItem("Roll")) {
-                    ROLL_window_bool = !ROLL_window_bool;
-                }
-                if (ImGui::MenuItem("LOCATION")) {
-                    LOCATION_window_bool = !LOCATION_window_bool;
-                }
+                ImGui::MenuItem("Vertical Speed",   nullptr, &Vertical_Speed_window_bool);
+                ImGui::MenuItem("Air Speed",        nullptr, &Air_Speed_window_bool);
+                ImGui::MenuItem("Attitude",         nullptr, &Attitude_window_bool);
+                ImGui::MenuItem("Altitude",         nullptr, &altitude_window_bool);
+                ImGui::MenuItem("Compass",          nullptr, &Compass_window_bool);
+                ImGui::MenuItem("BATTERY-SETTINGS", nullptr, &BATTERY_window_bool);
+                ImGui::MenuItem("Roll",             nullptr, &ROLL_window_bool);
+                ImGui::MenuItem("LOCATION",         nullptr, &LOCATION_window_bool);
                 ImGui::EndMenu();
             }
-            
 
-            ImGui::SetCursorPos(ImVec2(window_size.x-120 ,3));
-			ImGui::Button("Settings", ImVec2(100,25));
+            ImGui::SetCursorPos(ImVec2(window_size.x - 120, 3));
+            ImGui::Button("Settings", ImVec2(100, 25));
             ImGui::EndMainMenuBar();
         }
 
-        if (Air_Speed_window_bool) {
-            ImGui::Begin("Air_Speed", &Air_Speed_window_bool);
-            ImVec2 Air_Speed_window_size = ImGui::GetWindowSize();
-
-            ImGui::SetCursorPos(ImVec2(5, 50));
-            const ImVec2 Air_Speed_window_child = ImVec2(Air_Speed_window_size.x - 10, Air_Speed_window_size.y - 55);
-            ImGui::BeginChild("Air_Speed_WINDOW_CHILD", Air_Speed_window_child);
-
-            ImVec2 Air_Speed_gauge_value = ImGui::GetCursorScreenPos();
-            if (Air_Speed_window_size.x <= Air_Speed_window_size.y) {
-                float image_position = (Air_Speed_window_child.y - Air_Speed_window_child.x + 6) / 2 + 20;
-                ImGui::SetCursorPos(ImVec2(30, image_position + 7));
-                ImGui::Image((void*)(intptr_t)airspeed_bg, ImVec2(Air_Speed_window_child.x - 60, Air_Speed_window_child.x - 60));
-
-
-                ImVec2 center(Air_Speed_gauge_value.x + Air_Speed_window_child.x / 2, Air_Speed_gauge_value.y + Air_Speed_window_child.y / 2);
-                ImVec2 size(Air_Speed_window_child.x - 60, Air_Speed_window_child.x - 60);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)airspeed_hand, center, size, 0.01 * 6.3);
-
-            }
-            else {
-                float image_position = (Air_Speed_window_child.x - Air_Speed_window_child.y + 6) / 2 + 5;
-                ImGui::SetCursorPos(ImVec2(image_position, 8));
-                ImGui::Image((void*)(intptr_t)airspeed_bg, ImVec2(Air_Speed_window_child.y - 15, Air_Speed_window_child.y - 15));
-
-
-                ImVec2 center(Air_Speed_gauge_value.x + Air_Speed_window_child.x / 2, Air_Speed_gauge_value.y + Air_Speed_window_child.y / 2);
-                ImVec2 size(Air_Speed_window_child.y - 15, Air_Speed_window_child.y - 15);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)airspeed_hand, center, size, 0.01 * 6.3);
-            }
-            ImGui::EndChild();
-
-
-            ImGui::End();
-
-        }
-
-
-
-        if (Vertical_Speed_window_bool) {
-            ImGui::Begin("Vertical_Speed", &Vertical_Speed_window_bool);
-            ImVec2 Vertical_Speed_window_size = ImGui::GetWindowSize();
-
-            ImGui::SetCursorPos(ImVec2(5, 50));
-            const ImVec2 Vertical_Speed_window_child = ImVec2(Vertical_Speed_window_size.x - 10, Vertical_Speed_window_size.y - 55);
-            ImGui::BeginChild("Vertical_Speed_WINDOW_CHILD", Vertical_Speed_window_child);
-
-            ImVec2 Vertical_Speed_gauge_value = ImGui::GetCursorScreenPos();
-            if (Vertical_Speed_window_size.x <= Vertical_Speed_window_size.y) {
-                float image_position = (Vertical_Speed_window_child.y - Vertical_Speed_window_child.x + 6) / 2 + 20;
-                ImGui::SetCursorPos(ImVec2(30, image_position + 7));
-                ImGui::Image((void*)(intptr_t)verticalspeed_bg, ImVec2(Vertical_Speed_window_child.x - 60, Vertical_Speed_window_child.x - 60));
-
-
-                ImVec2 center(Vertical_Speed_gauge_value.x + Vertical_Speed_window_child.x / 2, Vertical_Speed_gauge_value.y + Vertical_Speed_window_child.y / 2);
-                ImVec2 size(Vertical_Speed_window_child.x - 60, Vertical_Speed_window_child.x - 60);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)verticalspeed_hand, center, size, 0.01 * 6.3);
-
-            }
-            else {
-                float image_position = (Vertical_Speed_window_child.x - Vertical_Speed_window_child.y + 6) / 2 + 5;
-                ImGui::SetCursorPos(ImVec2(image_position, 8));
-                ImGui::Image((void*)(intptr_t)verticalspeed_bg, ImVec2(Vertical_Speed_window_child.y - 15, Vertical_Speed_window_child.y - 15));
-
-
-                ImVec2 center(Vertical_Speed_gauge_value.x + Vertical_Speed_window_child.x / 2, Vertical_Speed_gauge_value.y + Vertical_Speed_window_child.y / 2);
-                ImVec2 size(Vertical_Speed_window_child.y - 15, Vertical_Speed_window_child.y - 15);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)verticalspeed_hand, center, size, 0.01 * 6.3);
-            }
-            ImGui::EndChild();
-
-
-            ImGui::End();
-
-        }
-
-
-
-        if (altitude_window_bool) {
-            ImGui::Begin("altitude", &altitude_window_bool);
-            ImVec2 altitude_window_size = ImGui::GetWindowSize();
-
-            ImGui::SetCursorPos(ImVec2(5, 50));
-            const ImVec2 altitude_window_child = ImVec2(altitude_window_size.x - 10, altitude_window_size.y - 55);
-            ImGui::BeginChild("altitude_WINDOW_CHILD", altitude_window_child);
-
-            ImVec2 altitude_gauge_value = ImGui::GetCursorScreenPos();
-            if (altitude_window_size.x <= altitude_window_size.y) {
-                float image_position = (altitude_window_child.y - altitude_window_child.x + 6) / 2 + 20;
-                ImGui::SetCursorPos(ImVec2(30, image_position + 7));
-                ImGui::Image((void*)(intptr_t)altitude_bg, ImVec2(altitude_window_child.x - 60, altitude_window_child.x - 60));
-
-
-                ImVec2 center(altitude_gauge_value.x + altitude_window_child.x / 2, altitude_gauge_value.y + altitude_window_child.y / 2);
-                ImVec2 size(altitude_window_child.x - 60, altitude_window_child.x - 60);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)airspeed_hand, center, size, 0.01 * 6.3);
-
-            }
-            else {
-                float image_position = (altitude_window_child.x - altitude_window_child.y + 6) / 2 + 5;
-                ImGui::SetCursorPos(ImVec2(image_position, 8));
-                ImGui::Image((void*)(intptr_t)altitude_bg, ImVec2(altitude_window_child.y - 15, altitude_window_child.y - 15));
-
-
-                ImVec2 center(altitude_gauge_value.x + altitude_window_child.x / 2, altitude_gauge_value.y + altitude_window_child.y / 2);
-                ImVec2 size(altitude_window_child.y - 15, altitude_window_child.y - 15);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)airspeed_hand, center, size, 0.01 * 6.3);
-            }
-            ImGui::EndChild();
-
-
-            ImGui::End();
-
-        }
-
-
-
-        if (Compass_window_bool) {
-            ImGui::Begin("Compass", &Compass_window_bool);
-            ImVec2 Compass_window_size = ImGui::GetWindowSize();
-
-            ImGui::SetCursorPos(ImVec2(5, 50));
-            const ImVec2 Compass_window_child = ImVec2(Compass_window_size.x - 10, Compass_window_size.y - 55);
-            ImGui::BeginChild("Compass_WINDOW_CHILD", Compass_window_child);
-
-            ImVec2 Compass_gauge_value = ImGui::GetCursorScreenPos();
-            if (Compass_window_size.x <= Compass_window_size.y) {
-                float image_position = (Compass_window_child.y - Compass_window_child.x + 6) / 2 + 20;
-                ImGui::SetCursorPos(ImVec2(30, image_position + 7));
-                ImGui::Image((void*)(intptr_t)compass_bg, ImVec2(Compass_window_child.x - 60, Compass_window_child.x - 60));
-
-
-                ImVec2 center(Compass_gauge_value.x + Compass_window_child.x / 2, Compass_gauge_value.y + Compass_window_child.y / 2);
-                ImVec2 size(Compass_window_child.x - 60, Compass_window_child.x - 60);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)compass_handle, center, size, 0.01 * 6.3);
-
-            }
-            else {
-                float image_position = (Compass_window_child.x - Compass_window_child.y + 6) / 2 + 5;
-                ImGui::SetCursorPos(ImVec2(image_position, 8));
-                ImGui::Image((void*)(intptr_t)compass_bg, ImVec2(Compass_window_child.y - 15, Compass_window_child.y - 15));
-
-
-                ImVec2 center(Compass_gauge_value.x + Compass_window_child.x / 2, Compass_gauge_value.y + Compass_window_child.y / 2);
-                ImVec2 size(Compass_window_child.y - 15, Compass_window_child.y - 15);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)compass_handle, center, size, 0.01 * 6.3);
-            }
-            ImGui::EndChild();
-
-
-            ImGui::End();
-
-        }
-
-        
-        
-        if (ROLL_window_bool) {
-            ImGui::Begin("ROLL", &ROLL_window_bool);
-            ImVec2 ROLL_window_size = ImGui::GetWindowSize();
-
-            ImGui::SetCursorPos(ImVec2(5, 50));
-            const ImVec2 ROLL_window_child = ImVec2(ROLL_window_size.x - 10, ROLL_window_size.y - 55);
-            ImGui::BeginChild("ROLL_WINDOW_CHILD", ROLL_window_child);
-
-            ImVec2 ROLL_gauge_value = ImGui::GetCursorScreenPos();
-            if (ROLL_window_size.x <= ROLL_window_size.y) {
-                float image_position = (ROLL_window_child.y - ROLL_window_child.x + 6) / 2 + 20;
-                ImGui::SetCursorPos(ImVec2(30, image_position + 7));
-                ImGui::Image((void*)(intptr_t)roll_bg, ImVec2(ROLL_window_child.x - 60, ROLL_window_child.x - 60));
-
-
-                ImVec2 center(ROLL_gauge_value.x + ROLL_window_child.x / 2, ROLL_gauge_value.y + ROLL_window_child.y / 2);
-                ImVec2 size(ROLL_window_child.x - 60, ROLL_window_child.x - 60);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)roll_handle, center, size,0.7);
-
-            }
-            else {
-                float image_position = (ROLL_window_child.x - ROLL_window_child.y + 6) / 2 + 5;
-                ImGui::SetCursorPos(ImVec2(image_position, 8));
-                ImGui::Image((void*)(intptr_t)roll_bg, ImVec2(ROLL_window_child.y - 15, ROLL_window_child.y - 15));
-
-
-                ImVec2 center(ROLL_gauge_value.x + ROLL_window_child.x / 2, ROLL_gauge_value.y + ROLL_window_child.y / 2);
-                ImVec2 size(ROLL_window_child.y - 15, ROLL_window_child.y - 15);
-                Widgets_Controls::ImageRotated((void*)(intptr_t)roll_handle, center, size,0.7);
-            }
-            ImGui::EndChild();
-
-
-            ImGui::End();
-
-        }
-
-        
+        // Needle angles are placeholders until live telemetry is wired in.
+        const float placeholder_angle = 0.01f * 6.3f;
+        GaugeWindow("Air_Speed",      &Air_Speed_window_bool,      airspeed_bg,      airspeed_hand,      placeholder_angle);
+        GaugeWindow("Vertical_Speed", &Vertical_Speed_window_bool, verticalspeed_bg, verticalspeed_hand, placeholder_angle);
+        // There is no dedicated altimeter needle asset yet, so the airspeed needle is reused.
+        GaugeWindow("altitude",       &altitude_window_bool,       altitude_bg,      airspeed_hand,      placeholder_angle);
+        GaugeWindow("Compass",        &Compass_window_bool,        compass_bg,       compass_handle,     placeholder_angle);
+        GaugeWindow("ROLL",           &ROLL_window_bool,           roll_bg,          roll_handle,        0.7f);
+        AttitudeIndicator::ShowWindow(&Attitude_window_bool);
     }
-
-
 }

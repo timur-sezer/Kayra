@@ -1,12 +1,9 @@
 #pragma once
 #include "Widgets_Controls.h"
-#include "glad/glad.h"
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
-#include <GLFW/glfw3.h>
 
 namespace MyWindow {
+	bool Init();          // load textures; call once after the GL context and ImGui are ready
+	void Shutdown();      // free textures
 	void ShowMainDockSpace();
 	void Mycode();
 }

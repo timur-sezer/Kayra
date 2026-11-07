@@ -1,33 +1,28 @@
 cmake_minimum_required(VERSION 3.12)
 project(KAYRA)
 
-set(CMAKE_BUILD_TYPE Debug)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug)
+endif()
 
 # Set C++ standard to C++17
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --- 1. Find Required Packages ---
 find_package(glfw3 REQUIRED)
-find_package(MAVSDK REQUIRED)
-find_package(OpenCV REQUIRED) # Added OpenCV
-find_package(OpenGL REQUIRED) # Ensure OpenGL is found for linking
+find_package(OpenGL REQUIRED)
 
-# --- 2. Add the Executable ---
-add_executable(KAYRA
-        main.cpp
-        Windows/Main_Window.cpp
-        Windows/Main_Window.h
-        Windows/Widgets_Controls.cpp
-        Windows/Widgets_Controls.h
-)
+# MAVSDK and OpenCV are not used by the GUI yet; link them when available.
+find_package(MAVSDK QUIET)
+find_package(OpenCV QUIET)
 
-# --- 3. Add the GLAD Library (Using Docker's system paths) ---
-add_library(glad STATIC /usr/local/src/glad.c)
-target_include_directories(glad PUBLIC /usr/local/include)
+# --- 2. GLAD (bundled in dependencies/, works both natively and in Docker) ---
+add_library(glad STATIC dependencies/src/glad.c)
+target_include_directories(glad PUBLIC dependencies/include)
 
-# --- 4. Add the ImGui Library ---
-# (Assuming 'dependencies/imgui' is mounted into the container via volume)
-add_library(imgui STATIC 
+# --- 3. ImGui ---
+add_library(imgui STATIC
         dependencies/imgui/imgui.cpp
         dependencies/imgui/imgui_tables.cpp
         dependencies/imgui/imgui_draw.cpp
@@ -37,20 +32,32 @@ add_library(imgui STATIC
         dependencies/imgui/imgui_impl_opengl3.cpp
 )
 target_include_directories(imgui PUBLIC dependencies/imgui)
+target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
-# --- 5. Link Everything Together ---
-target_link_libraries(KAYRA 
-    PRIVATE 
-    MAVSDK::mavsdk 
-    glfw 
-    glad 
-    dl 
-    imgui
-    ${OpenCV_LIBS} # Link OpenCV libraries
-    OpenGL::GL     # Link System OpenGL
+# --- 4. Executable ---
+add_executable(KAYRA
+        main.cpp
+        Windows/Main_Window.cpp
+        Windows/Main_Window.h
+        Windows/Widgets_Controls.cpp
+        Windows/Widgets_Controls.h
+        Windows/Attitude_Indicator.cpp
+        Windows/Attitude_Indicator.h
 )
 
-# --- 6. Compile Options ---
+# Absolute asset path so the program runs from any working directory
+target_compile_definitions(KAYRA PRIVATE KAYRA_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+
+target_link_libraries(KAYRA PRIVATE glad imgui glfw OpenGL::GL ${CMAKE_DL_LIBS})
+
+if(MAVSDK_FOUND)
+    target_link_libraries(KAYRA PRIVATE MAVSDK::mavsdk)
+endif()
+if(OpenCV_FOUND)
+    target_link_libraries(KAYRA PRIVATE ${OpenCV_LIBS})
+endif()
+
+# --- 5. Compile Options ---
 if(NOT MSVC)
     target_compile_options(KAYRA PRIVATE -Wall -Wextra)
 else()

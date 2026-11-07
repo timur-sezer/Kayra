@@ -1,9 +1,14 @@
-#include "dependencies/include/glad/glad.h"
-#include "dependencies/imgui/imgui.h"
-#include "dependencies/imgui/imgui_impl_glfw.h"
-#include "dependencies/imgui/imgui_impl_opengl3.h"
+#include "glad/glad.h"
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 #include <GLFW/glfw3.h>
+#include <cstdio>
 #include "Windows/Main_Window.h"
+
+#ifndef KAYRA_ASSETS_DIR
+#define KAYRA_ASSETS_DIR "../assets"
+#endif
 
 
 int main(void)
@@ -27,12 +32,11 @@ int main(void)
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // Required on Mac
 #else
-    // GL 3.0 + GLSL 130
-    const char* glsl_version = "#version 130";
+    // GL 3.3 core + GLSL 330 (matches the bundled GLAD loader)
+    const char* glsl_version = "#version 330";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    //glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
-    //glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 #endif
 
     /* Create a windowed mode window and its OpenGL context */
@@ -47,16 +51,22 @@ int main(void)
 
 
     // Initialize Glad
-    gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        fprintf(stderr, "KAYRA: failed to initialize GLAD\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    io.Fonts->AddFontDefault();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
+    io.IniFilename = nullptr;  // Don't restore a saved layout; the fixed default layout is built every launch
     //io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
 
 
@@ -67,12 +77,19 @@ int main(void)
     font_config.RasterizerMultiply = 1.2f;
 
 
-    ImFont* font1 = io.Fonts->AddFontFromFileTTF("../assets/fonts/OpenSans.ttf", 20);
-    io.FontDefault = font1;
+    ImFont* font1 = io.Fonts->AddFontFromFileTTF(KAYRA_ASSETS_DIR "/fonts/OpenSans.ttf", 20, &font_config);
+    if (font1 == nullptr)
+    {
+        fprintf(stderr, "KAYRA: could not load OpenSans.ttf, using default font\n");
+        io.Fonts->AddFontDefault();
+    }
     
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
+
+    if (!MyWindow::Init())
+        fprintf(stderr, "KAYRA: some textures failed to load\n");
 
     
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
@@ -111,11 +128,8 @@ int main(void)
 
     }
 
-#ifdef __EMSCRIPTEN__
-    EMSCRIPTEN_MAINLOOP_END;
-#endif
-
     // Cleanup
+    MyWindow::Shutdown();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
