@@ -6,13 +6,15 @@
 #include <cstdio>
 #include "Windows/Main_Window.h"
 #include "Windows/backend.h"
+#include "Windows/Settings.h"
 
 #ifndef KAYRA_ASSETS_DIR
 #define KAYRA_ASSETS_DIR "../assets"
 #endif
 
 
-int main(void)
+// Usage: KAYRA [connection_url]   e.g. KAYRA udpin://0.0.0.0:14540 connects on startup.
+int main(int argc, char** argv)
 {
     
     if (!glfwInit())
@@ -89,8 +91,17 @@ int main(void)
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
+    Settings::Load();
     if (!MyWindow::Init())
         fprintf(stderr, "KAYRA: some textures failed to load\n");
+
+    if (argc > 1) {
+        MyWindow::SetConnectionUrl(argv[1]);
+        backend::connect(argv[1]);
+    }
+    else if (Settings::Get().auto_connect) {
+        backend::connect(Settings::Get().connection_url);
+    }
 
     
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
@@ -107,6 +118,7 @@ int main(void)
 
         //Mycode
         MyWindow::Mycode();
+        Settings::SaveIfChanged();
 
         // Rendering
         ImGui::Render();

@@ -1,6 +1,8 @@
 ﻿#include "Main_Window.h"
 #include "Widgets_Controls.h"
 #include "Attitude_Indicator.h"
+#include "Mission_Plan.h"
+#include "Settings.h"
 #include "backend.h"
 #include "imgui.h"
 #include "imgui_internal.h"   // DockBuilder API
@@ -17,7 +19,6 @@
 using namespace Widgets_Controls;
 
 namespace MyWindow {
-    static ImVec2 window_size;
 
     // Textures are created once in Init() — loading them every frame leaks GPU memory.
     static GLuint airspeed_bg = 0;
@@ -71,7 +72,8 @@ namespace MyWindow {
 
     bool Init()
     {
-        embraceTheDarkness();
+        Settings::ApplyStyle();
+        SetConnectionUrl(Settings::Get().connection_url);
 
         bool ok = true;
         ok &= LoadAsset("images/ais/ais_case_v10.png", &airspeed_bg);
@@ -88,6 +90,7 @@ namespace MyWindow {
 
     void Shutdown()
     {
+        MissionPlan::Shutdown();
         for (GLuint* tex : all_textures) {
             if (*tex) {
                 glDeleteTextures(1, tex);
@@ -108,6 +111,7 @@ namespace MyWindow {
     //   | Health     |           |           |           +-------------+
     //   |            |           |           |           | Flight Data |
     //   +------------+-----------+-----------+-----------+-------------+
+    // The map lives in the Mission Plan tab.
     static void BuildDefaultLayout(ImGuiID dockspace_id, ImVec2 size)
     {
         ImGui::DockBuilderRemoveNode(dockspace_id);
@@ -153,9 +157,18 @@ namespace MyWindow {
         ImGui::DockBuilderFinish(dockspace_id);
     }
 
-    void ShowMainDockSpace()
+    static bool layout_built = false;
+
+    void ResetLayout()
     {
-        const ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
+        layout_built = false;
+    }
+
+    void ShowMainDockSpace(bool flight_visible, bool plan_visible)
+    {
+        // Two dockspaces share this host window: Flight and Mission Plan. The one not shown is
+        // submitted with KeepAliveOnly, which keeps its layout without taking any space.
+        const bool visible = flight_visible || plan_visible;
 
         // Note: ImGuiDockNodeFlags_* must not be mixed into ImGuiWindowFlags (different enums).
         ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking;
@@ -166,25 +179,30 @@ namespace MyWindow {
         ImGui::SetNextWindowViewport(viewport->ID);
         window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
         window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+        if (!visible)  // another tab is shown on top: this host must not draw or take clicks
+            window_flags |= ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs;
 
         // Background window that hosts the DockSpace
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 
         ImGui::Begin("Main", nullptr, window_flags);
-        window_size = ImGui::GetWindowSize();
         ImGui::PopStyleVar(2);
 
         ImGuiIO& io = ImGui::GetIO();
         if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
         {
-            ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
-            static bool layout_built = false;
+            const ImGuiID flight_id = ImGui::GetID("MyDockSpace");
             if (!layout_built) {
-                BuildDefaultLayout(dockspace_id, viewport->WorkSize);
+                BuildDefaultLayout(flight_id, viewport->WorkSize);
                 layout_built = true;
             }
-            ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+            const ImGuiID plan_id = ImGui::GetID("PlanDockSpace");
+            if (!MissionPlan::LayoutBuilt())
+                MissionPlan::BuildDefaultLayout(plan_id, viewport->WorkSize.x, viewport->WorkSize.y);
+
+            ImGui::DockSpace(flight_id, ImVec2(0.0f, 0.0f), flight_visible ? ImGuiDockNodeFlags_None : ImGuiDockNodeFlags_KeepAliveOnly);
+            ImGui::DockSpace(plan_id, ImVec2(0.0f, 0.0f), plan_visible ? ImGuiDockNodeFlags_None : ImGuiDockNodeFlags_KeepAliveOnly);
         }
 
         ImGui::End();
@@ -335,11 +353,19 @@ namespace MyWindow {
     // Telemetry windows
     // ------------------------------------------------------------------------------------
 
+    static char connection_url[256] = "udpin://0.0.0.0:14540";
+
+    void SetConnectionUrl(const char* url)
+    {
+        snprintf(connection_url, sizeof(connection_url), "%s", url);
+    }
+
     static void ConnectionWindow(bool* p_open)
     {
         if (!*p_open) return;
         if (ImGui::Begin(kConnectionTitle, p_open)) {
-            static char url[256] = "udpin://0.0.0.0:14540";
+            char* url = connection_url;
+            const size_t url_size = sizeof(connection_url);
 
             const backend::ConnectionState state = backend::connection_state;
             const bool busy = state == backend::ConnectionState::Connecting
@@ -349,15 +375,18 @@ namespace MyWindow {
             ImGui::TextDisabled("Connection URL");
             ImGui::SetNextItemWidth(-FLT_MIN);
             ImGui::BeginDisabled(busy);
-            const bool enter = ImGui::InputText("##url", url, sizeof(url), ImGuiInputTextFlags_EnterReturnsTrue);
+            const bool enter = ImGui::InputText("##url", url, url_size, ImGuiInputTextFlags_EnterReturnsTrue);
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("PX4 SITL:  udpin://0.0.0.0:14540\nQGC port:  udpin://0.0.0.0:14550\nSerial:    serial:///dev/ttyUSB0:57600");
 
             const float w = ImGui::GetContentRegionAvail().x;
             if (!busy) {
-                if (ImGui::Button("Connect", ImVec2(w, 0)) || enter)
+                if (ImGui::Button("Connect", ImVec2(w, 0)) || enter) {
+                    // Remember the last URL used as the default
+                    snprintf(Settings::Get().connection_url, sizeof(Settings::Get().connection_url), "%s", url);
                     backend::connect(url);
+                }
             }
             else {
                 if (ImGui::Button(state == backend::ConnectionState::Connecting ? "Cancel" : "Disconnect", ImVec2(w, 0)))
@@ -518,52 +547,114 @@ namespace MyWindow {
     // Frame
     // ------------------------------------------------------------------------------------
 
-    void Mycode() {
-        static bool ROLL_window_bool = true;
-        static bool Attitude_window_bool = true;
-        static bool Air_Speed_window_bool = true;
-        static bool Vertical_Speed_window_bool = true;
-        static bool altitude_window_bool = true;
-        static bool Compass_window_bool = true;
-        static bool Connection_window_bool = true;
-        static bool Health_window_bool = true;
-        static bool BATTERY_window_bool = true;
-        static bool LOCATION_window_bool = true;
-        static bool FlightData_window_bool = true;
+    enum View : int { ViewFlight = 0, ViewMissionPlan, ViewSettings };
 
-        ShowMainDockSpace();
+    // Top bar: OPEN-WINDOW menu, view tabs and connection status.
+    static void TopBar(int& view)
+    {
+        if (!ImGui::BeginMainMenuBar())
+            return;
 
-        if (ImGui::BeginMainMenuBar())
+        Settings::FlightWindows& w = Settings::Get().windows;
+        ImGui::BeginDisabled(view == ViewSettings);
+        if (view == ViewMissionPlan && ImGui::BeginMenu("OPEN-WINDOW"))
         {
-            if (ImGui::BeginMenu("OPEN-WINDOW"))
-            {
-                ImGui::SeparatorText("Gauges");
-                ImGui::MenuItem("Air Speed",      nullptr, &Air_Speed_window_bool);
-                ImGui::MenuItem("Attitude",       nullptr, &Attitude_window_bool);
-                ImGui::MenuItem("Altitude",       nullptr, &altitude_window_bool);
-                ImGui::MenuItem("Roll",           nullptr, &ROLL_window_bool);
-                ImGui::MenuItem("Compass",        nullptr, &Compass_window_bool);
-                ImGui::MenuItem("Vertical Speed", nullptr, &Vertical_Speed_window_bool);
-                ImGui::SeparatorText("Telemetry");
-                ImGui::MenuItem("Connection",     nullptr, &Connection_window_bool);
-                ImGui::MenuItem("Health",         nullptr, &Health_window_bool);
-                ImGui::MenuItem("Battery",        nullptr, &BATTERY_window_bool);
-                ImGui::MenuItem("Location",       nullptr, &LOCATION_window_bool);
-                ImGui::MenuItem("Flight Data",    nullptr, &FlightData_window_bool);
-                ImGui::EndMenu();
-            }
-
-            // Connection status in the menu bar, left of the Settings button.
-            const backend::ConnectionState state = backend::connection_state;
-            const char* state_name = backend::connection_state_name(state);
-            const float status_w = ImGui::CalcTextSize(state_name).x;
-            ImGui::SetCursorPosX(window_size.x - 140 - status_w);
-            ImGui::TextColored(StateColor(state), "%s", state_name);
-
-            ImGui::SetCursorPos(ImVec2(window_size.x - 120, 3));
-            ImGui::Button("Settings", ImVec2(100, 25));
-            ImGui::EndMainMenuBar();
+            MissionPlan::WindowsMenu();
+            ImGui::EndMenu();
         }
+        else if (view != ViewMissionPlan && ImGui::BeginMenu("OPEN-WINDOW"))
+        {
+            ImGui::SeparatorText("Gauges");
+            ImGui::MenuItem("Air Speed",      nullptr, &w.air_speed);
+            ImGui::MenuItem("Attitude",       nullptr, &w.attitude);
+            ImGui::MenuItem("Altitude",       nullptr, &w.altitude);
+            ImGui::MenuItem("Roll",           nullptr, &w.roll);
+            ImGui::MenuItem("Compass",        nullptr, &w.compass);
+            ImGui::MenuItem("Vertical Speed", nullptr, &w.vertical_speed);
+            ImGui::SeparatorText("Telemetry");
+            ImGui::MenuItem("Connection",     nullptr, &w.connection);
+            ImGui::MenuItem("Health",         nullptr, &w.health);
+            ImGui::MenuItem("Battery",        nullptr, &w.battery);
+            ImGui::MenuItem("Location",       nullptr, &w.location);
+            ImGui::MenuItem("Flight Data",    nullptr, &w.flight_data);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset layout"))
+                ResetLayout();
+            ImGui::EndMenu();
+        }
+        ImGui::EndDisabled();
+
+        // View tabs
+        static const char* kTabs[] = {"Flight", "Mission Plan", "Settings"};
+        ImGui::SameLine(0.0f, 24.0f);
+        const ImGuiStyle& style = ImGui::GetStyle();
+        for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i) {
+            const bool active = view == i;
+            const ImVec2 text = ImGui::CalcTextSize(kTabs[i]);
+            const ImVec2 size(text.x + style.FramePadding.x * 4.0f, ImGui::GetFrameHeight());
+            ImGui::PushStyleColor(ImGuiCol_Button, active ? style.Colors[ImGuiCol_ButtonActive] : ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_Text, active ? style.Colors[ImGuiCol_Text] : style.Colors[ImGuiCol_TextDisabled]);
+            if (ImGui::Button(kTabs[i], size))
+                view = i;
+            ImGui::PopStyleColor(2);
+            if (active) {
+                // Underline the active tab
+                const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(a.x + 6, b.y - 2), ImVec2(b.x - 6, b.y),
+                                                          ImGui::GetColorU32(ImGuiCol_CheckMark));
+            }
+            ImGui::SameLine();
+        }
+
+        // Connection status on the right
+        const backend::ConnectionState state = backend::connection_state;
+        const char* state_name = backend::connection_state_name(state);
+        const float status_w = ImGui::CalcTextSize(state_name).x;
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - status_w - style.ItemSpacing.x * 3.0f);
+        ImGui::TextColored(StateColor(state), "%s", state_name);
+        ImGui::EndMainMenuBar();
+    }
+
+    // A borderless window that fills the area under the top bar (for the non-docking tabs).
+    static bool BeginFullView(const char* name, bool just_opened)
+    {
+        if (just_opened)
+            ImGui::SetNextWindowFocus();  // bring it in front of the (hidden) Flight dockspace
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(viewport->WorkPos);
+        ImGui::SetNextWindowSize(viewport->WorkSize);
+        ImGui::SetNextWindowViewport(viewport->ID);
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
+                                     | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        const bool open = ImGui::Begin(name, nullptr, flags);
+        ImGui::PopStyleVar();
+        return open;
+    }
+
+    void Mycode() {
+        int& view = Settings::Get().last_view;
+        static int shown_view = -1;
+        const bool view_changed = view != shown_view;
+        shown_view = view;
+
+        // The dockspaces stay alive in every tab so each layout is kept while hidden.
+        ShowMainDockSpace(view == ViewFlight, view == ViewMissionPlan);
+        TopBar(view);
+        MissionPlan::Update();
+
+        if (view == ViewMissionPlan) {
+            MissionPlan::ShowWindows();
+            return;
+        }
+        if (view == ViewSettings) {
+            if (BeginFullView("##settings_view", view_changed))
+                Settings::ShowView();
+            ImGui::End();
+            return;
+        }
+
+        Settings::FlightWindows& w = Settings::Get().windows;
 
         // ---- Read telemetry once per frame ----
         const bool  live      = backend::mavsdk_connected;
@@ -591,24 +682,24 @@ namespace MyWindow {
         // Readout positions are measured from the dial images (fractions of the image size).
         const ImU32 dark  = IM_COL32(20, 25, 35, 255);
         const ImU32 light = IM_COL32(230, 240, 245, 255);
-        GaugeWindow(kAirSpeedTitle,      &Air_Speed_window_bool,      airspeed_bg,      airspeed_hand,
+        GaugeWindow(kAirSpeedTitle,      &w.air_speed,                airspeed_bg,      airspeed_hand,
                     Needle::Airspeed(airspeed), { airspeed_txt, ImVec2(0.495f, 0.793f), dark });
-        GaugeWindow(kVerticalSpeedTitle, &Vertical_Speed_window_bool, verticalspeed_bg, verticalspeed_hand,
+        GaugeWindow(kVerticalSpeedTitle, &w.vertical_speed,      verticalspeed_bg, verticalspeed_hand,
                     Needle::Vertical(climb),    { climb_txt,    ImVec2(0.503f, 0.781f), dark });
         // There is no dedicated altimeter needle asset yet, so the airspeed needle is reused.
-        GaugeWindow(kAltitudeTitle,      &altitude_window_bool,       altitude_bg,      airspeed_hand,
+        GaugeWindow(kAltitudeTitle,      &w.altitude,                 altitude_bg,      airspeed_hand,
                     Needle::Altitude(rel_alt),  { alt_txt,      ImVec2(0.500f, 0.750f), light });
-        GaugeWindow(kCompassTitle,       &Compass_window_bool,        compass_bg,       compass_handle,
+        GaugeWindow(kCompassTitle,       &w.compass,                  compass_bg,       compass_handle,
                     Needle::Compass(heading),   { heading_txt,  ImVec2(0.500f, 0.740f), light });
-        GaugeWindow(kRollTitle,          &ROLL_window_bool,           roll_bg,          roll_handle,
+        GaugeWindow(kRollTitle,          &w.roll,                     roll_bg,          roll_handle,
                     Needle::Roll(roll),         { roll_txt,     ImVec2(0.500f, 0.800f), light });
-        AttitudeIndicator::ShowWindow(&Attitude_window_bool);
+        AttitudeIndicator::ShowWindow(&w.attitude);
 
         // ---- Telemetry windows ----
-        ConnectionWindow(&Connection_window_bool);
-        HealthWindow(&Health_window_bool);
-        BatteryWindow(&BATTERY_window_bool);
-        LocationWindow(&LOCATION_window_bool);
-        FlightDataWindow(&FlightData_window_bool);
+        ConnectionWindow(&w.connection);
+        HealthWindow(&w.health);
+        BatteryWindow(&w.battery);
+        LocationWindow(&w.location);
+        FlightDataWindow(&w.flight_data);
     }
 }

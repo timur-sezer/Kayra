@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <string>
+#include <vector>
 
 namespace backend {
     enum class ConnectionState : int {
@@ -58,6 +59,42 @@ namespace backend {
     // --- GPS ---
     extern std::atomic<int> GPS_fix_type;       // mavsdk::Telemetry::FixType as int
     extern std::atomic<int> GPS_num_satellites;
+
+    // --- Home ---
+    extern std::atomic<double> Home_latitude;   // NaN until the vehicle reports a home position
+    extern std::atomic<double> Home_longitude;
+    extern std::atomic<float>  Home_altitude_amsl;  // m
+
+    // --- Mission ---
+    // One mission item (MAVLink MISSION_ITEM_INT), any type.
+    struct MissionItem {
+        int    seq = 0;            // sequence number (what Mission_current refers to)
+        int    frame = 6;          // MAV_FRAME; 6 = global, altitude relative to home
+        int    command = 16;       // MAV_CMD; 16 = NAV_WAYPOINT
+        int    autocontinue = 1;
+        float  param1 = 0.0f, param2 = 0.0f, param3 = 0.0f, param4 = 0.0f;
+        double latitude_deg = 0.0;
+        double longitude_deg = 0.0;
+        float  altitude_m = 0.0f;
+        bool   positional = false; // has a geographic position (waypoint, takeoff, land, loiter, ...)
+        unsigned uid = 0;          // KAYRA-side identifier for the editors; never sent to the vehicle
+    };
+
+    // True for MAV_CMDs that fly to a position (NAV_WAYPOINT, NAV_TAKEOFF, NAV_LAND, loiters, ...).
+    bool is_positional_command(int command);
+
+    extern std::atomic<int> Mission_current;   // seq of the item being flown to; -1 unknown
+    extern std::atomic<int> Mission_total;     // number of items on the vehicle (all types); 0 none
+    extern std::atomic<int> Mission_version;   // incremented whenever the vehicle mission we know changes
+
+    std::vector<MissionItem> mission_items();  // the vehicle's mission (last download or upload)
+    std::string mission_status();              // e.g. "8 waypoints (9 items)", "Uploading..."
+    bool mission_busy();                       // a download, upload or clear is in progress
+
+    // All asynchronous; the result shows in mission_status() and, on success, in mission_items().
+    void reload_mission();                                    // download from the vehicle
+    bool upload_mission(std::vector<MissionItem> items);      // false if not connected or busy
+    bool clear_vehicle_mission();                             // false if not connected or busy
 
     // --- Health ---
     extern std::atomic<bool> Is_gyrometer_calibration_ok;
