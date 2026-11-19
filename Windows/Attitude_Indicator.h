@@ -12,7 +12,8 @@ namespace AttitudeIndicator {
 	// Shows the "Attitude" window with the indicator fitted to the window.
 	// Until live telemetry is connected, right-click the window to set pitch/roll by hand
 	// or turn on demo motion.
-	void ShowWindow(bool* p_open);
+	// `fill`: dial diameter as a fraction of the largest square that fits the window.
+	void ShowWindow(bool* p_open, float fill = 1.0f);
 
 	// Feed live attitude here (e.g. from MAVSDK telemetry). Turns off demo/manual input.
 	void SetAttitude(float pitch_deg, float roll_deg);

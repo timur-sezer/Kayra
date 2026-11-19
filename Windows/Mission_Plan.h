@@ -15,12 +15,14 @@ namespace MissionPlan {
     inline constexpr const char* kMapTitle   = "Map###PlanMap";
     inline constexpr const char* kGraphTitle = "Node editor###PlanGraph";
     inline constexpr const char* kPanelTitle = "Mission###PlanPanel";
+    inline constexpr const char* kFlightMapTitle = "Map###FlightMap";  // map window in the Flight tab
 
     void BuildDefaultLayout(unsigned dockspace_id, float width, float height);  // DockBuilder layout of the tab
     bool LayoutBuilt();
     void ResetLayout();     // rebuild the default layout on the next frame
     void ShowWindows();     // submit the three windows (only while the Mission Plan tab is shown)
     void WindowsMenu();     // OPEN-WINDOW menu entries for this tab
+    void ShowFlightMap(bool* p_open);  // read-only map for the Flight tab (vehicle, trail, mission, next waypoint)
     void Shutdown();    // frees map textures and stops tile downloads; call before destroying the GL context
 
     std::string TileCacheDir();

@@ -7,6 +7,8 @@
 #include "Windows/Main_Window.h"
 #include "Windows/backend.h"
 #include "Windows/Settings.h"
+#include "Windows/Terminal.h"
+#include "Windows/Theme.h"
 
 #ifndef KAYRA_ASSETS_DIR
 #define KAYRA_ASSETS_DIR "../assets"
@@ -16,6 +18,7 @@
 // Usage: KAYRA [connection_url]   e.g. KAYRA udpin://0.0.0.0:14540 connects on startup.
 int main(int argc, char** argv)
 {
+    Terminal::StartCapture();   // first, so the Terminal window sees all output
     
     if (!glfwInit())
         return 1;
@@ -73,19 +76,17 @@ int main(int argc, char** argv)
     //io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
 
 
-    ImFontConfig font_config;
-    font_config.PixelSnapH = false;
-    font_config.OversampleH = 5;
-    font_config.OversampleV = 5;
-    font_config.RasterizerMultiply = 1.2f;
-
-
-    ImFont* font1 = io.Fonts->AddFontFromFileTTF(KAYRA_ASSETS_DIR "/fonts/OpenSans.ttf", 20, &font_config);
-    if (font1 == nullptr)
+    // Fonts are rasterized at the framebuffer scale (2x on Retina) so text stays sharp.
+    float dpi = 1.0f;
+#if defined(__APPLE__)
     {
-        fprintf(stderr, "KAYRA: could not load OpenSans.ttf, using default font\n");
-        io.Fonts->AddFontDefault();
+        int win_w = 0, win_h = 0, fb_w = 0, fb_h = 0;
+        glfwGetWindowSize(window, &win_w, &win_h);
+        glfwGetFramebufferSize(window, &fb_w, &fb_h);
+        if (win_w > 0) dpi = float(fb_w) / float(win_w);
     }
+#endif
+    Theme::LoadFonts(KAYRA_ASSETS_DIR, dpi);
     
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -104,7 +105,6 @@ int main(int argc, char** argv)
     }
 
     
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     /* Loop until the user closes the window */
     while (!glfwWindowShouldClose(window))
@@ -125,7 +125,8 @@ int main(int argc, char** argv)
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
-        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+        const ImVec4 clear_color = Theme::P().bg;
+        glClearColor(clear_color.x, clear_color.y, clear_color.z, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -151,5 +152,6 @@ int main(int argc, char** argv)
     glfwDestroyWindow(window);
     glfwTerminate();
 
+    Terminal::StopCapture();
     return 0;
 }

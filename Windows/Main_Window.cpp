@@ -3,6 +3,8 @@
 #include "Attitude_Indicator.h"
 #include "Mission_Plan.h"
 #include "Settings.h"
+#include "Terminal.h"
+#include "Theme.h"
 #include "backend.h"
 #include "imgui.h"
 #include "imgui_internal.h"   // DockBuilder API
@@ -37,11 +39,11 @@ namespace MyWindow {
     };
 
     // Window titles (also used by the dock layout).
-    static const char* const kAirSpeedTitle      = "Air_Speed";
-    static const char* const kVerticalSpeedTitle = "Vertical_Speed";
-    static const char* const kAltitudeTitle      = "altitude";
+    static const char* const kAirSpeedTitle      = "Airspeed";
+    static const char* const kVerticalSpeedTitle = "Vertical Speed";
+    static const char* const kAltitudeTitle      = "Altitude";
     static const char* const kCompassTitle       = "Compass";
-    static const char* const kRollTitle          = "ROLL";
+    static const char* const kRollTitle          = "Roll";
     static const char* const kConnectionTitle    = "Connection";
     static const char* const kHealthTitle        = "Health";
     static const char* const kBatteryTitle       = "Battery";
@@ -52,10 +54,11 @@ namespace MyWindow {
     static constexpr float kDegToRad = kPi / 180.0f;
     static constexpr float kRadToDeg = 180.0f / kPi;
 
-    static const ImVec4 kGood    = ImVec4(0.30f, 0.85f, 0.45f, 1.0f);
-    static const ImVec4 kWarn    = ImVec4(0.95f, 0.75f, 0.20f, 1.0f);
-    static const ImVec4 kBad     = ImVec4(0.95f, 0.30f, 0.30f, 1.0f);
-    static const ImVec4 kNeutral = ImVec4(0.60f, 0.60f, 0.60f, 1.0f);
+    // Status colors come from the theme (they differ between dark and light).
+#define kGood    (Theme::P().good)
+#define kWarn    (Theme::P().warn)
+#define kBad     (Theme::P().bad)
+#define kNeutral (Theme::P().text_faint)
 
     static ImTextureID ToTexID(GLuint tex) { return (ImTextureID)(intptr_t)tex; }
 
@@ -73,6 +76,7 @@ namespace MyWindow {
     bool Init()
     {
         Settings::ApplyStyle();
+        Theme::InstallTabBarButton();
         SetConnectionUrl(Settings::Get().connection_url);
 
         bool ok = true;
@@ -103,15 +107,16 @@ namespace MyWindow {
     // Layout
     // ------------------------------------------------------------------------------------
 
-    // Builds the fixed default layout:
-    //   +------------+-----------+-----------+-----------+-------------+
-    //   | Connection | Air_Speed | Attitude  | altitude  | Battery     |
-    //   |            +-----------+-----------+-----------+-------------+
-    //   +------------+   ROLL    |  Compass  | Vert_Spd  | Location    |
-    //   | Health     |           |           |           +-------------+
-    //   |            |           |           |           | Flight Data |
-    //   +------------+-----------+-----------+-----------+-------------+
-    // The map lives in the Mission Plan tab.
+    // Builds the default Flight layout:
+    //   +----------+-----------------------------------------+-------------+
+    //   | Attitude |                  Map                    | Connection  |
+    //   |          |                                         | (Health)    |
+    //   +----------+-----------------------------------------+             |
+    //   | Battery  |                Terminal                 +-------------+
+    //   +----------+-------+-------+-------+-------+---------+ Flight Data |
+    //   | Location | Alt   |Compass| Roll  |Airspd | VertSpd |             |
+    //   +----------+-------+-------+-------+-------+---------+-------------+
+    // Health is closed by default; it opens as a tab behind Connection.
     static void BuildDefaultLayout(ImGuiID dockspace_id, ImVec2 size)
     {
         ImGui::DockBuilderRemoveNode(dockspace_id);
@@ -120,39 +125,42 @@ namespace MyWindow {
 
         // Side columns
         ImGuiID left = 0, rest = 0, right = 0, center = 0;
-        ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.18f, &left, &rest);
-        ImGui::DockBuilderSplitNode(rest, ImGuiDir_Right, 0.22f, &right, &center);
+        ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.155f, &left, &rest);
+        ImGui::DockBuilderSplitNode(rest, ImGuiDir_Right, 0.215f, &right, &center);
 
-        ImGuiID left_top = 0, left_bottom = 0;
-        ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.40f, &left_top, &left_bottom);
+        // Left: Attitude, Battery, Location
+        ImGuiID attitude = 0, left_rest = 0, battery = 0, location = 0;
+        ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.35f, &attitude, &left_rest);
+        ImGui::DockBuilderSplitNode(left_rest, ImGuiDir_Up, 0.385f, &battery, &location);
 
-        ImGuiID right_top = 0, right_rest = 0, right_mid = 0, right_bottom = 0;
-        ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.30f, &right_top, &right_rest);
-        ImGui::DockBuilderSplitNode(right_rest, ImGuiDir_Up, 0.50f, &right_mid, &right_bottom);
+        // Right: Connection, Flight Data
+        ImGuiID connection = 0, flight_data = 0;
+        ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.41f, &connection, &flight_data);
 
-        // Gauge six-pack in the center
-        ImGuiID top = 0, bottom = 0;
-        ImGui::DockBuilderSplitNode(center, ImGuiDir_Up, 0.5f, &top, &bottom);
+        // Center: map, terminal strip, then a row of four equal gauges
+        ImGuiID upper = 0, gauges = 0, map = 0, terminal = 0;
+        ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, &gauges, &upper);
+        ImGui::DockBuilderSplitNode(upper, ImGuiDir_Down, 0.26f, &terminal, &map);
+        // Five equal gauge cells: each split takes 1/n of what is left
+        ImGuiID g[5] = {};
+        ImGuiID remaining = gauges;
+        for (int i = 0; i < 4; ++i)
+            ImGui::DockBuilderSplitNode(remaining, ImGuiDir_Left, 1.0f / float(5 - i), &g[i], &remaining);
+        g[4] = remaining;
 
-        ImGuiID top_left = 0, top_rest = 0, top_mid = 0, top_right = 0;
-        ImGui::DockBuilderSplitNode(top, ImGuiDir_Left, 1.0f / 3.0f, &top_left, &top_rest);
-        ImGui::DockBuilderSplitNode(top_rest, ImGuiDir_Left, 0.5f, &top_mid, &top_right);
-
-        ImGuiID bottom_left = 0, bottom_rest = 0, bottom_mid = 0, bottom_right = 0;
-        ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Left, 1.0f / 3.0f, &bottom_left, &bottom_rest);
-        ImGui::DockBuilderSplitNode(bottom_rest, ImGuiDir_Left, 0.5f, &bottom_mid, &bottom_right);
-
-        ImGui::DockBuilderDockWindow(kConnectionTitle,                left_top);
-        ImGui::DockBuilderDockWindow(kHealthTitle,                    left_bottom);
-        ImGui::DockBuilderDockWindow(kAirSpeedTitle,                  top_left);
-        ImGui::DockBuilderDockWindow(AttitudeIndicator::kWindowTitle, top_mid);
-        ImGui::DockBuilderDockWindow(kAltitudeTitle,                  top_right);
-        ImGui::DockBuilderDockWindow(kRollTitle,                      bottom_left);
-        ImGui::DockBuilderDockWindow(kCompassTitle,                   bottom_mid);
-        ImGui::DockBuilderDockWindow(kVerticalSpeedTitle,             bottom_right);
-        ImGui::DockBuilderDockWindow(kBatteryTitle,                   right_top);
-        ImGui::DockBuilderDockWindow(kLocationTitle,                  right_mid);
-        ImGui::DockBuilderDockWindow(kFlightDataTitle,                right_bottom);
+        ImGui::DockBuilderDockWindow(AttitudeIndicator::kWindowTitle, attitude);
+        ImGui::DockBuilderDockWindow(kBatteryTitle,                   battery);
+        ImGui::DockBuilderDockWindow(kLocationTitle,                  location);
+        ImGui::DockBuilderDockWindow(MissionPlan::kFlightMapTitle,    map);
+        ImGui::DockBuilderDockWindow(kAltitudeTitle,                  g[0]);
+        ImGui::DockBuilderDockWindow(kCompassTitle,                   g[1]);
+        ImGui::DockBuilderDockWindow(kRollTitle,                      g[2]);
+        ImGui::DockBuilderDockWindow(kAirSpeedTitle,                  g[3]);
+        ImGui::DockBuilderDockWindow(kVerticalSpeedTitle,             g[4]);
+        ImGui::DockBuilderDockWindow(kConnectionTitle,                connection);
+        ImGui::DockBuilderDockWindow(kHealthTitle,                    connection);  // tab behind Connection
+        ImGui::DockBuilderDockWindow(kFlightDataTitle,                flight_data);
+        ImGui::DockBuilderDockWindow(Terminal::kFlightTitle,          terminal);
 
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -192,14 +200,19 @@ namespace MyWindow {
         ImGuiIO& io = ImGui::GetIO();
         if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
         {
+            // Build the default layouts only once the top bar has been measured (the work area
+            // shrinks by its height from frame 2 on). Building earlier makes one dock area absorb
+            // the difference and the gauge rows come out uneven.
+            const bool sizes_known = ImGui::GetFrameCount() > 2;
+            const ImVec2 area = ImGui::GetContentRegionAvail();
             const ImGuiID flight_id = ImGui::GetID("MyDockSpace");
-            if (!layout_built) {
-                BuildDefaultLayout(flight_id, viewport->WorkSize);
+            if (!layout_built && sizes_known) {
+                BuildDefaultLayout(flight_id, area);
                 layout_built = true;
             }
             const ImGuiID plan_id = ImGui::GetID("PlanDockSpace");
-            if (!MissionPlan::LayoutBuilt())
-                MissionPlan::BuildDefaultLayout(plan_id, viewport->WorkSize.x, viewport->WorkSize.y);
+            if (!MissionPlan::LayoutBuilt() && sizes_known)
+                MissionPlan::BuildDefaultLayout(plan_id, area.x, area.y);
 
             ImGui::DockSpace(flight_id, ImVec2(0.0f, 0.0f), flight_visible ? ImGuiDockNodeFlags_None : ImGuiDockNodeFlags_KeepAliveOnly);
             ImGui::DockSpace(plan_id, ImVec2(0.0f, 0.0f), plan_visible ? ImGuiDockNodeFlags_None : ImGuiDockNodeFlags_KeepAliveOnly);
@@ -290,22 +303,24 @@ namespace MyWindow {
         ImU32 color = IM_COL32_WHITE;
     };
 
-    // Draws a square gauge (background + rotated needle) centered in a window.
+    // Ring diameter as a fraction of the largest square that fits a gauge window.
+    constexpr float kGaugeFill = 0.92f;
+
+    // Draws a gauge (background + rotated needle) filling and centered in its window.
+    // `visible` is the fraction of the image the dial ring fills (measured from the PNGs), so
+    // rings in equal windows come out the same size on screen.
     static void GaugeWindow(const char* title, bool* p_open, GLuint background, GLuint needle, float angle,
-                            const Readout& readout = Readout())
+                            const Readout& readout = Readout(), float visible = 0.977f)
     {
         if (!*p_open)
             return;
 
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
         if (ImGui::Begin(title, p_open, flags)) {
-            // Use the real free area under the title/tab bar instead of hard-coded offsets.
             const ImVec2 origin = ImGui::GetCursorScreenPos();
             const ImVec2 avail  = ImGui::GetContentRegionAvail();
-
-            // Largest square that fits, with a small margin so the case doesn't touch the edges.
-            const float margin = 0.05f;
-            const float side   = (avail.x < avail.y ? avail.x : avail.y) * (1.0f - 2.0f * margin);
+            const float ring = std::min(avail.x, avail.y) * kGaugeFill;
+            const float side = ring / visible;  // image size that gives that ring size
 
             if (side > 1.0f) {
                 // Case and needle share one center, so the needle always pivots in the dial's middle.
@@ -382,19 +397,19 @@ namespace MyWindow {
 
             const float w = ImGui::GetContentRegionAvail().x;
             if (!busy) {
-                if (ImGui::Button("Connect", ImVec2(w, 0)) || enter) {
+                if (Theme::PrimaryButton("Connect", ImVec2(w, 0)) || enter) {
                     // Remember the last URL used as the default
                     snprintf(Settings::Get().connection_url, sizeof(Settings::Get().connection_url), "%s", url);
                     backend::connect(url);
                 }
             }
             else {
-                if (ImGui::Button(state == backend::ConnectionState::Connecting ? "Cancel" : "Disconnect", ImVec2(w, 0)))
+                if (Theme::DangerButton(state == backend::ConnectionState::Connecting ? "Cancel" : "Disconnect", ImVec2(w, 0)))
                     backend::disconnect();
             }
 
             ImGui::Spacing();
-            ImGui::TextColored(StateColor(state), "%s", backend::connection_state_name(state));
+            Theme::Pill(backend::connection_state_name(state), StateColor(state));
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextDisabled("%s", backend::status_text().c_str());
             ImGui::PopTextWrapPos();
@@ -414,27 +429,27 @@ namespace MyWindow {
     {
         if (!*p_open) return;
         if (ImGui::Begin(kHealthTitle, p_open)) {
-            ImGui::SeparatorText("Sensors");
+            Theme::Section("Sensors");
             if (BeginDataTable("health_sensors")) {
                 StatusRow("Gyro calibration",  backend::Is_gyrometer_calibration_ok);
                 StatusRow("Accel calibration", backend::Is_accelerometer_calibration_ok);
                 StatusRow("Mag calibration",   backend::Is_magnetometer_calibration_ok);
                 ImGui::EndTable();
             }
-            ImGui::SeparatorText("Position");
+            Theme::Section("Position");
             if (BeginDataTable("health_pos")) {
                 StatusRow("Local position",  backend::Is_local_position_ok);
                 StatusRow("Global position", backend::Is_global_position_ok);
                 StatusRow("Home position",   backend::Is_home_position_ok);
                 ImGui::EndTable();
             }
-            ImGui::SeparatorText("Arming");
+            Theme::Section("Arming");
             if (BeginDataTable("health_arm")) {
                 StatusRow("Armable", backend::Is_armable, "YES", "NO");
                 StatusRow("Armed",   backend::Is_armed,   "YES", "NO");
                 ImGui::EndTable();
             }
-            ImGui::SeparatorText("RC link");
+            Theme::Section("RC link");
             if (BeginDataTable("health_rc")) {
                 StatusRow("RC available", backend::Is_available, "YES", "NO");
                 StatusRow("Seen once",    backend::Was_available_once, "YES", "NO");
@@ -449,7 +464,9 @@ namespace MyWindow {
     {
         if (!*p_open) return;
         if (ImGui::Begin(kBatteryTitle, p_open)) {
-            const float pct = Load(backend::Battery_remaining_percent);
+            float pct = Load(backend::Battery_remaining_percent);
+            if (Valid(pct) && (pct < 0.0f || pct > 100.5f))
+                pct = NAN;  // out of range: the autopilot doesn't know (often reported as -1)
             char overlay[32];
             Fmt(overlay, sizeof(overlay), "%.0f %%", pct);
 
@@ -497,7 +514,7 @@ namespace MyWindow {
                 ImGui::EndTable();
             }
 
-            ImGui::SeparatorText("Velocity (NED)");
+            Theme::Section("Velocity (NED)");
             if (BeginDataTable("velocity")) {
                 const float vn = Load(backend::Velocity_x_m_s);
                 const float ve = Load(backend::Velocity_y_m_s);
@@ -516,7 +533,7 @@ namespace MyWindow {
     {
         if (!*p_open) return;
         if (ImGui::Begin(kFlightDataTitle, p_open)) {
-            ImGui::SeparatorText("Attitude");
+            Theme::Section("Attitude");
             if (BeginDataTable("attitude")) {
                 RowValue("Roll",    "%.1f deg", Load(backend::Attitude_roll_deg));
                 RowValue("Pitch",   "%.1f deg", Load(backend::Attitude_pitch_deg));
@@ -524,14 +541,14 @@ namespace MyWindow {
                 RowValue("Heading", "%.0f deg", Load(backend::Heading_deg));
                 ImGui::EndTable();
             }
-            ImGui::SeparatorText("Angular rate");
+            Theme::Section("Angular rate");
             if (BeginDataTable("rates")) {
                 RowValue("Roll rate",  "%.1f deg/s", Load(backend::Angular_velocity_roll_rad)  * kRadToDeg);
                 RowValue("Pitch rate", "%.1f deg/s", Load(backend::Angular_velocity_pitch_rad) * kRadToDeg);
                 RowValue("Yaw rate",   "%.1f deg/s", Load(backend::Angular_velocity_yaw_rad)   * kRadToDeg);
                 ImGui::EndTable();
             }
-            ImGui::SeparatorText("Speed");
+            Theme::Section("Speed");
             if (BeginDataTable("speeds")) {
                 RowValue("Airspeed",    "%.1f m/s", Load(backend::Airspeed_m_s));
                 RowValue("Groundspeed", "%.1f m/s", Load(backend::Groundspeed_m_s));
@@ -552,66 +569,142 @@ namespace MyWindow {
     // Top bar: OPEN-WINDOW menu, view tabs and connection status.
     static void TopBar(int& view)
     {
-        if (!ImGui::BeginMainMenuBar())
+        const Theme::Palette& pal = Theme::P();
+        const float sc = Theme::Scale();
+
+        // A taller bar than ImGui's default gives the controls room to breathe.
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f * sc, 11.0f * sc));
+        const bool open = ImGui::BeginMainMenuBar();
+        ImGui::PopStyleVar();
+        if (!open)
             return;
 
-        Settings::FlightWindows& w = Settings::Get().windows;
-        ImGui::BeginDisabled(view == ViewSettings);
-        if (view == ViewMissionPlan && ImGui::BeginMenu("OPEN-WINDOW"))
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 bar_pos = ImGui::GetWindowPos();
+        const float bar_w = ImGui::GetWindowWidth();
+        const float bar_h = ImGui::GetWindowHeight();
+        const float mid_y = bar_pos.y + bar_h * 0.5f;
+
+        // Hairline under the bar
+        dl->AddLine(ImVec2(bar_pos.x, bar_pos.y + bar_h - 1), ImVec2(bar_pos.x + bar_w, bar_pos.y + bar_h - 1),
+                    Theme::Col(pal.border));
+
+        // ---- Wordmark: arrow mark + KAYRA ----
         {
-            MissionPlan::WindowsMenu();
-            ImGui::EndMenu();
+            const float x = bar_pos.x + 14.0f * sc;
+            const ImVec2 c(x + 7.0f * sc, mid_y);
+            auto pt = [&](float px, float py) { return ImVec2(c.x + px * sc, c.y + py * sc); };
+            dl->AddTriangleFilled(pt(0, -8), pt(7, 7), pt(0, 3), Theme::Col(pal.accent));
+            dl->AddTriangleFilled(pt(0, -8), pt(0, 3), pt(-7, 7), Theme::Col(pal.accent, 0.75f));
+
+            ImFont* font = Theme::Get(Theme::Font::Heading);
+            const float fs = font->FontSize * ImGui::GetIO().FontGlobalScale;
+            dl->AddText(font, fs, ImVec2(x + 22.0f * sc, mid_y - fs * 0.5f), Theme::Col(pal.text), "KAYRA");
+            const float text_w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "KAYRA").x;
+            ImGui::SetCursorScreenPos(ImVec2(x + 22.0f * sc + text_w + 20.0f * sc, ImGui::GetCursorScreenPos().y));
         }
-        else if (view != ViewMissionPlan && ImGui::BeginMenu("OPEN-WINDOW"))
-        {
-            ImGui::SeparatorText("Gauges");
-            ImGui::MenuItem("Air Speed",      nullptr, &w.air_speed);
-            ImGui::MenuItem("Attitude",       nullptr, &w.attitude);
-            ImGui::MenuItem("Altitude",       nullptr, &w.altitude);
-            ImGui::MenuItem("Roll",           nullptr, &w.roll);
-            ImGui::MenuItem("Compass",        nullptr, &w.compass);
-            ImGui::MenuItem("Vertical Speed", nullptr, &w.vertical_speed);
-            ImGui::SeparatorText("Telemetry");
-            ImGui::MenuItem("Connection",     nullptr, &w.connection);
-            ImGui::MenuItem("Health",         nullptr, &w.health);
-            ImGui::MenuItem("Battery",        nullptr, &w.battery);
-            ImGui::MenuItem("Location",       nullptr, &w.location);
-            ImGui::MenuItem("Flight Data",    nullptr, &w.flight_data);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Reset layout"))
-                ResetLayout();
+
+        // ---- Windows menu (lists the current tab's windows) ----
+        ImGui::BeginDisabled(view == ViewSettings);
+        ImGui::PushStyleColor(ImGuiCol_Text, pal.text_dim);
+        const bool menu_open = ImGui::BeginMenu("Windows");
+        ImGui::PopStyleColor();
+        if (menu_open) {
+            if (view == ViewMissionPlan) {
+                MissionPlan::WindowsMenu();
+            }
+            else {
+                Settings::FlightWindows& w = Settings::Get().windows;
+                Theme::Section("Gauges");
+                ImGui::MenuItem("Airspeed",       nullptr, &w.air_speed);
+                ImGui::MenuItem("Attitude",       nullptr, &w.attitude);
+                ImGui::MenuItem("Altitude",       nullptr, &w.altitude);
+                ImGui::MenuItem("Roll",           nullptr, &w.roll);
+                ImGui::MenuItem("Compass",        nullptr, &w.compass);
+                ImGui::MenuItem("Vertical Speed", nullptr, &w.vertical_speed);
+                Theme::Section("Telemetry");
+                ImGui::MenuItem("Connection",     nullptr, &w.connection);
+                ImGui::MenuItem("Health",         nullptr, &w.health);
+                ImGui::MenuItem("Battery",        nullptr, &w.battery);
+                ImGui::MenuItem("Location",       nullptr, &w.location);
+                ImGui::MenuItem("Flight Data",    nullptr, &w.flight_data);
+                Theme::Section("Navigation");
+                ImGui::MenuItem("Map",            nullptr, &w.map);
+                Theme::Section("Output");
+                ImGui::MenuItem("Terminal",       nullptr, &w.terminal);
+                ImGui::Separator();
+                if (ImGui::MenuItem("Reset layout"))
+                    ResetLayout();
+            }
             ImGui::EndMenu();
         }
         ImGui::EndDisabled();
 
-        // View tabs
-        static const char* kTabs[] = {"Flight", "Mission Plan", "Settings"};
-        ImGui::SameLine(0.0f, 24.0f);
-        const ImGuiStyle& style = ImGui::GetStyle();
-        for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i) {
-            const bool active = view == i;
-            const ImVec2 text = ImGui::CalcTextSize(kTabs[i]);
-            const ImVec2 size(text.x + style.FramePadding.x * 4.0f, ImGui::GetFrameHeight());
-            ImGui::PushStyleColor(ImGuiCol_Button, active ? style.Colors[ImGuiCol_ButtonActive] : ImVec4(0, 0, 0, 0));
-            ImGui::PushStyleColor(ImGuiCol_Text, active ? style.Colors[ImGuiCol_Text] : style.Colors[ImGuiCol_TextDisabled]);
-            if (ImGui::Button(kTabs[i], size))
-                view = i;
-            ImGui::PopStyleColor(2);
-            if (active) {
-                // Underline the active tab
-                const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(a.x + 6, b.y - 2), ImVec2(b.x - 6, b.y),
-                                                          ImGui::GetColorU32(ImGuiCol_CheckMark));
+        // ---- Segmented control for the tabs, centered ----
+        {
+            static const char* kTabs[] = {"Flight", "Mission Plan", "Settings"};
+            ImFont* font = Theme::Get(Theme::Font::Medium);
+            const float fs = font->FontSize * ImGui::GetIO().FontGlobalScale;
+            const float pad_x = 16.0f * sc, inset = 3.0f * sc;
+            const float seg_h = std::min(bar_h - 14.0f * sc, fs + 14.0f * sc);
+
+            float widths[IM_ARRAYSIZE(kTabs)];
+            float total = inset * 2.0f;
+            for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i) {
+                widths[i] = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, kTabs[i]).x + pad_x * 2.0f;
+                total += widths[i];
             }
-            ImGui::SameLine();
+            const ImVec2 box_min(bar_pos.x + (bar_w - total) * 0.5f, mid_y - seg_h * 0.5f);
+            const float r = std::min(ImGui::GetStyle().FrameRounding + 2.0f * sc, seg_h * 0.5f);
+            dl->AddRectFilled(box_min, ImVec2(box_min.x + total, box_min.y + seg_h), Theme::Col(pal.raised), r);
+
+            float x = box_min.x + inset;
+            for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i) {
+                const ImVec2 a(x, box_min.y + inset), b(x + widths[i], box_min.y + seg_h - inset);
+                ImGui::SetCursorScreenPos(a);
+                ImGui::PushID(i);
+                const bool clicked = ImGui::InvisibleButton("##tab", ImVec2(b.x - a.x, b.y - a.y));
+                const bool hovered = ImGui::IsItemHovered();
+                ImGui::PopID();
+                if (clicked) view = i;
+
+                const bool active = view == i;
+                if (active) {
+                    dl->AddRectFilled(a, b, Theme::Col(pal.dark ? pal.hover : pal.surface), r - inset * 0.5f);
+                    if (!pal.dark)
+                        dl->AddRect(a, b, Theme::Col(pal.border), r - inset * 0.5f);
+                }
+                const ImVec4 text = active ? pal.text : (hovered ? pal.text : pal.text_dim);
+                const float tw = widths[i] - pad_x * 2.0f;
+                dl->AddText(font, fs, ImVec2(a.x + (b.x - a.x - tw) * 0.5f, mid_y - fs * 0.5f), Theme::Col(text), kTabs[i]);
+                x += widths[i];
+            }
         }
 
-        // Connection status on the right
-        const backend::ConnectionState state = backend::connection_state;
-        const char* state_name = backend::connection_state_name(state);
-        const float status_w = ImGui::CalcTextSize(state_name).x;
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - status_w - style.ItemSpacing.x * 3.0f);
-        ImGui::TextColored(StateColor(state), "%s", state_name);
+        // ---- Right: vehicle mode/arming + connection pill ----
+        {
+            const backend::ConnectionState state = backend::connection_state;
+            const char* state_name = backend::connection_state_name(state);
+
+            ImGui::PushFont(Theme::Get(Theme::Font::Small));
+            const float pill_w = ImGui::CalcTextSize(state_name).x + 8.0f * sc * 2.0f + 3.0f * sc * 2.0f + 6.0f * sc;
+            ImGui::PopFont();
+            float x = bar_pos.x + bar_w - pill_w - 14.0f * sc;
+            ImGui::SetCursorScreenPos(ImVec2(x, mid_y - ImGui::GetFrameHeight() * 0.5f));
+            Theme::Pill(state_name, StateColor(state));
+
+            if (backend::mavsdk_connected) {
+                std::string mode = backend::flight_mode();
+                if (mode.empty()) mode = "--";
+                const bool armed = backend::Is_armed;
+                char info[96];
+                snprintf(info, sizeof(info), "%s  \xC2\xB7  %s", mode.c_str(), armed ? "Armed" : "Disarmed");
+                const float tw = ImGui::CalcTextSize(info).x;
+                x -= tw + 14.0f * sc;
+                dl->AddText(ImVec2(x, mid_y - ImGui::GetFontSize() * 0.5f),
+                            Theme::Col(armed ? pal.warn : pal.text_dim), info);
+            }
+        }
         ImGui::EndMainMenuBar();
     }
 
@@ -683,7 +776,7 @@ namespace MyWindow {
         const ImU32 dark  = IM_COL32(20, 25, 35, 255);
         const ImU32 light = IM_COL32(230, 240, 245, 255);
         GaugeWindow(kAirSpeedTitle,      &w.air_speed,                airspeed_bg,      airspeed_hand,
-                    Needle::Airspeed(airspeed), { airspeed_txt, ImVec2(0.495f, 0.793f), dark });
+                    Needle::Airspeed(airspeed), { airspeed_txt, ImVec2(0.495f, 0.793f), dark }, 0.934f);
         GaugeWindow(kVerticalSpeedTitle, &w.vertical_speed,      verticalspeed_bg, verticalspeed_hand,
                     Needle::Vertical(climb),    { climb_txt,    ImVec2(0.503f, 0.781f), dark });
         // There is no dedicated altimeter needle asset yet, so the airspeed needle is reused.
@@ -693,7 +786,7 @@ namespace MyWindow {
                     Needle::Compass(heading),   { heading_txt,  ImVec2(0.500f, 0.740f), light });
         GaugeWindow(kRollTitle,          &w.roll,                     roll_bg,          roll_handle,
                     Needle::Roll(roll),         { roll_txt,     ImVec2(0.500f, 0.800f), light });
-        AttitudeIndicator::ShowWindow(&w.attitude);
+        AttitudeIndicator::ShowWindow(&w.attitude, kGaugeFill);
 
         // ---- Telemetry windows ----
         ConnectionWindow(&w.connection);
@@ -701,5 +794,7 @@ namespace MyWindow {
         BatteryWindow(&w.battery);
         LocationWindow(&w.location);
         FlightDataWindow(&w.flight_data);
+        MissionPlan::ShowFlightMap(&w.map);
+        Terminal::ShowWindow(Terminal::kFlightTitle, &w.terminal);
     }
 }

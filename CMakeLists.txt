@@ -65,11 +65,16 @@ add_executable(KAYRA
         Windows/Mission_Plan.h
         Windows/Settings.cpp
         Windows/Settings.h
+        Windows/Theme.cpp
+        Windows/Theme.h
+        Windows/Terminal.cpp
+        Windows/Terminal.h
         Map/MapWidget.cpp
         Map/MapWidget.h
         Map/TileManager.cpp
         Map/TileManager.h
         Windows/Mission_Export.cpp
+        Windows/Node_Editor_View.cpp
         Windows/Mission_Export.h
         Windows/File_Dialog.h
 )

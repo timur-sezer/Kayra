@@ -8,20 +8,23 @@
 #include <string>
 
 namespace Settings {
-    enum Theme : int { ThemeKayraDark = 0, ThemeImGuiDark, ThemeLight, ThemeClassic, ThemeCount };
+    enum ThemeId : int { ThemeKayraDark = 0, ThemeKayraLight, ThemeImGuiDark, ThemeClassic, ThemeCount };
 
     struct FlightWindows {
+        // Health is closed in the default layout; it opens as a tab behind Connection.
         bool air_speed = true, attitude = true, altitude = true, roll = true, compass = true, vertical_speed = true;
-        bool connection = true, health = true, battery = true, location = true, flight_data = true;
+        bool connection = true, health = false, battery = true, location = true, flight_data = true;
+        bool map = true;
+        bool terminal = true;  // tab next to Flight Data
     };
 
     struct Values {
         // Appearance
         int   theme = ThemeKayraDark;
         float ui_scale = 1.0f;           // 0.75 .. 1.5
-        float rounding = 10.0f;          // window/frame corner radius, px
+        float rounding = 8.0f;           // window/frame corner radius, px
         bool  custom_accent = false;
-        float accent[3] = {0.20f, 0.65f, 0.95f};
+        float accent[3] = {0.04f, 0.52f, 1.0f};
 
         // Connection
         char  connection_url[256] = "udpin://0.0.0.0:14540";
@@ -43,6 +46,7 @@ namespace Settings {
 
         // Mission Plan windows
         bool  plan_map = true, plan_graph = true, plan_panel = true;
+        bool  plan_terminal = true;  // tab next to Mission
     };
 
     Values& Get();

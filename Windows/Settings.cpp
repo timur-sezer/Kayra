@@ -1,8 +1,8 @@
 #include "Settings.h"
+#include "Theme.h"
 
 #include "Main_Window.h"
 #include "Mission_Plan.h"
-#include "Widgets_Controls.h"
 #include "backend.h"
 #include "MapWidget.h"
 #include "imgui.h"
@@ -53,10 +53,13 @@ namespace Settings {
             f("window.battery", v.windows.battery);
             f("window.location", v.windows.location);
             f("window.flight_data", v.windows.flight_data);
+            f("window.map", v.windows.map);
+            f("window.terminal", v.windows.terminal);
             f("last_view", v.last_view);
             f("window.plan_map", v.plan_map);
             f("window.plan_node_editor", v.plan_graph);
             f("window.plan_mission", v.plan_panel);
+            f("window.plan_terminal", v.plan_terminal);
         }
 
         struct Writer {
@@ -112,7 +115,7 @@ namespace Settings {
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(label);
             ImGui::SameLine(ImGui::GetContentRegionMax().x * 0.42f);
-            ImGui::SetNextItemWidth(std::min(360.0f * ImGui::GetIO().FontGlobalScale,
+            ImGui::SetNextItemWidth(std::min(360.0f * Theme::Scale(),
                                              ImGui::GetContentRegionAvail().x));
         }
 
@@ -149,8 +152,8 @@ namespace Settings {
 
         void AppearanceSection(Values& v)
         {
-            ImGui::SeparatorText("Theme");
-            static const char* kThemes[] = {"KAYRA Dark", "ImGui Dark", "Light", "Classic"};
+            Theme::Section("Theme");
+            static const char* kThemes[] = {"KAYRA Dark", "KAYRA Light", "ImGui Dark", "ImGui Classic"};
             FieldLabel("Color theme");
             g_style_dirty |= ImGui::Combo("##theme", &v.theme, kThemes, ThemeCount);
 
@@ -162,7 +165,7 @@ namespace Settings {
             ImGui::EndDisabled();
             HelpMarker("Used for checkboxes, sliders, selected tabs and highlights");
 
-            ImGui::SeparatorText("Size");
+            Theme::Section("Size");
             FieldLabel("UI scale");
             // Applied when the slider is released, so the slider doesn't move under the mouse.
             static float pending_scale = -1.0f;
@@ -190,7 +193,7 @@ namespace Settings {
 
         void ConnectionSection(Values& v)
         {
-            ImGui::SeparatorText("Vehicle link");
+            Theme::Section("Vehicle link");
             FieldLabel("Connection URL");
             if (ImGui::InputText("##url", v.connection_url, sizeof(v.connection_url)))
                 MyWindow::SetConnectionUrl(v.connection_url);
@@ -201,7 +204,7 @@ namespace Settings {
             ImGui::Checkbox("##auto", &v.auto_connect);
             HelpMarker("Connect to this URL when KAYRA starts. A URL given on the command line takes precedence.");
 
-            ImGui::SeparatorText("Status");
+            Theme::Section("Status");
             const backend::ConnectionState state = backend::connection_state;
             FieldLabel("State");
             ImGui::TextUnformatted(backend::connection_state_name(state));
@@ -216,11 +219,11 @@ namespace Settings {
             ImGui::Spacing();
             if (!busy) {
                 ImGui::BeginDisabled(!backend::has_mavsdk());
-                if (ImGui::Button("Connect now"))
+                if (Theme::PrimaryButton("Connect now"))
                     backend::connect(v.connection_url);
                 ImGui::EndDisabled();
             }
-            else if (ImGui::Button("Disconnect")) {
+            else if (Theme::DangerButton("Disconnect")) {
                 backend::disconnect();
             }
             if (!backend::has_mavsdk())
@@ -229,7 +232,7 @@ namespace Settings {
 
         void MapSection(Values& v)
         {
-            ImGui::SeparatorText("Display");
+            Theme::Section("Display");
             FieldLabel("Map tiles");
             if (ImGui::BeginCombo("##tiles", MapWidget::sourceAt(v.tile_source).name)) {
                 for (int i = 0; i < MapWidget::sourceCount(); ++i)
@@ -243,7 +246,7 @@ namespace Settings {
             ImGui::Checkbox("##follow", &v.follow_on_connect);
             HelpMarker("Center the map on the vehicle when its first position arrives");
 
-            ImGui::SeparatorText("Offline tile cache");
+            Theme::Section("Offline tile cache");
             static CacheInfo cache;
             if (!cache.known)
                 cache = MeasureCache();
@@ -258,7 +261,7 @@ namespace Settings {
             if (ImGui::Button("Refresh"))
                 cache = MeasureCache();
             ImGui::SameLine();
-            if (ImGui::Button("Clear cache..."))
+            if (Theme::DangerButton("Clear cache..."))
                 ImGui::OpenPopup("Clear tile cache?");
             if (ImGui::BeginPopupModal("Clear tile cache?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::Text("Delete %s of downloaded map tiles?", FormatBytes(cache.bytes).c_str());
@@ -278,7 +281,7 @@ namespace Settings {
 
         void MissionSection(Values& v)
         {
-            ImGui::SeparatorText("New waypoints");
+            Theme::Section("New waypoints");
             FieldLabel("Default altitude");
             ImGui::DragFloat("##alt", &v.default_altitude_m, 0.5f, 1.0f, 1000.0f, "%.1f m");
             HelpMarker("Altitude above home for waypoints added on the map");
@@ -286,7 +289,7 @@ namespace Settings {
             ImGui::Checkbox("##takeoff", &v.first_item_takeoff);
             HelpMarker("The first waypoint added to an empty plan becomes a takeoff item");
 
-            ImGui::SeparatorText("Estimates");
+            Theme::Section("Estimates");
             FieldLabel("Cruise speed");
             ImGui::DragFloat("##speed", &v.plan_speed_m_s, 0.1f, 0.5f, 100.0f, "%.1f m/s");
             HelpMarker("Used for the flight time estimate in the Mission Plan tab");
@@ -294,41 +297,44 @@ namespace Settings {
 
         void FlightViewSection(Values& v)
         {
-            ImGui::SeparatorText("Gauges");
+            Theme::Section("Gauges");
             ImGui::Checkbox("Air speed", &v.windows.air_speed);
             ImGui::Checkbox("Attitude", &v.windows.attitude);
             ImGui::Checkbox("Altitude", &v.windows.altitude);
             ImGui::Checkbox("Roll", &v.windows.roll);
             ImGui::Checkbox("Compass", &v.windows.compass);
             ImGui::Checkbox("Vertical speed", &v.windows.vertical_speed);
-            ImGui::SeparatorText("Telemetry");
+            Theme::Section("Telemetry");
             ImGui::Checkbox("Connection", &v.windows.connection);
             ImGui::Checkbox("Health", &v.windows.health);
             ImGui::Checkbox("Battery", &v.windows.battery);
             ImGui::Checkbox("Location", &v.windows.location);
             ImGui::Checkbox("Flight data", &v.windows.flight_data);
+            ImGui::Checkbox("Map##flight", &v.windows.map);
+            ImGui::Checkbox("Terminal##flight", &v.windows.terminal);
 
-            ImGui::SeparatorText("Flight layout");
-            if (ImGui::Button("Show all Flight windows"))
+            Theme::Section("Flight layout");
+            if (ImGui::Button("Default Flight windows"))
                 v.windows = FlightWindows();
             ImGui::SameLine();
             if (ImGui::Button("Reset Flight layout"))
                 MyWindow::ResetLayout();
             HelpMarker("Puts every Flight window back in its default place");
 
-            ImGui::SeparatorText("Mission Plan windows");
+            Theme::Section("Mission Plan windows");
             ImGui::Checkbox("Map", &v.plan_map);
             ImGui::Checkbox("Node editor", &v.plan_graph);
             ImGui::Checkbox("Mission panel", &v.plan_panel);
+            ImGui::Checkbox("Terminal##plan", &v.plan_terminal);
             if (ImGui::Button("Reset Mission Plan layout")) {
-                v.plan_map = v.plan_graph = v.plan_panel = true;
+                v.plan_map = v.plan_graph = v.plan_panel = v.plan_terminal = true;
                 MissionPlan::ResetLayout();
             }
         }
 
         void AboutSection()
         {
-            ImGui::SeparatorText("KAYRA Ground Control Station");
+            Theme::Section("KAYRA Ground Control Station");
             FieldLabel("MAVSDK");
             ImGui::TextUnformatted(backend::has_mavsdk() ? "Available" : "Not built in");
             FieldLabel("Dear ImGui");
@@ -338,8 +344,8 @@ namespace Settings {
             ImGui::TextDisabled("%s", FilePath().c_str());
             ImGui::PopTextWrapPos();
 
-            ImGui::SeparatorText("Reset");
-            if (ImGui::Button("Reset all settings..."))
+            Theme::Section("Reset");
+            if (Theme::DangerButton("Reset all settings..."))
                 ImGui::OpenPopup("Reset all settings?");
             if (ImGui::BeginPopupModal("Reset all settings?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::TextUnformatted("Restore every setting to its default value?");
@@ -419,58 +425,8 @@ namespace Settings {
 
     void ApplyStyle()
     {
-        ImGuiStyle& style = ImGui::GetStyle();
-        style = ImGuiStyle();
-        switch (g_values.theme) {
-            case ThemeImGuiDark: ImGui::StyleColorsDark(); break;
-            case ThemeLight:     ImGui::StyleColorsLight(); break;
-            case ThemeClassic:   ImGui::StyleColorsClassic(); break;
-            default:             ImGui::StyleColorsDark(); Widgets_Controls::embraceTheDarkness(); break;
-        }
-        if (g_values.theme != ThemeKayraDark) {
-            // Keep KAYRA's spacing on the stock themes too
-            style.WindowPadding = ImVec2(5.0f, 5.0f);
-            style.FramePadding = ImVec2(8.0f, 5.0f);
-            style.ItemSpacing = ImVec2(5.0f, 5.0f);
-            style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
-            style.SeparatorTextAlign = ImVec2(0.5f, 0.5f);
-        }
-
-        const float r = g_values.rounding;
-        style.WindowRounding = r;
-        style.ChildRounding = r;
-        style.FrameRounding = r;
-        style.PopupRounding = r;
-        style.ScrollbarRounding = r;
-        style.GrabRounding = std::min(r, 3.0f);
-        style.TabRounding = std::min(r, 4.0f);
-
-        if (g_values.custom_accent) {
-            const ImVec4 a(g_values.accent[0], g_values.accent[1], g_values.accent[2], 1.0f);
-            auto with_alpha = [&](float alpha) { return ImVec4(a.x, a.y, a.z, alpha); };
-            ImVec4* c = style.Colors;
-            c[ImGuiCol_CheckMark]          = a;
-            c[ImGuiCol_SliderGrab]         = with_alpha(0.85f);
-            c[ImGuiCol_SliderGrabActive]   = a;
-            c[ImGuiCol_Button]             = with_alpha(0.30f);
-            c[ImGuiCol_ButtonHovered]      = with_alpha(0.55f);
-            c[ImGuiCol_ButtonActive]       = with_alpha(0.85f);
-            c[ImGuiCol_FrameBgActive]      = with_alpha(0.45f);
-            c[ImGuiCol_Header]             = with_alpha(0.35f);
-            c[ImGuiCol_HeaderHovered]      = with_alpha(0.55f);
-            c[ImGuiCol_HeaderActive]       = with_alpha(0.75f);
-            c[ImGuiCol_SeparatorActive]    = a;
-            c[ImGuiCol_ResizeGripActive]   = a;
-            c[ImGuiCol_TabActive]          = with_alpha(0.70f);
-            c[ImGuiCol_TabUnfocusedActive] = with_alpha(0.45f);
-            c[ImGuiCol_TextSelectedBg]     = with_alpha(0.40f);
-            c[ImGuiCol_DockingPreview]     = with_alpha(0.60f);
-            c[ImGuiCol_NavHighlight]       = a;
-            c[ImGuiCol_PlotHistogram]      = a;
-        }
-
-        style.ScaleAllSizes(g_values.ui_scale);
-        ImGui::GetIO().FontGlobalScale = g_values.ui_scale;
+        Theme::Apply(g_values.theme, g_values.ui_scale, g_values.rounding,
+                     g_values.custom_accent ? g_values.accent : nullptr);
     }
 
     void ShowView()
@@ -479,7 +435,7 @@ namespace Settings {
         static int section = 0;
         static const char* kSections[] = {"Appearance", "Connection", "Map", "Mission planning", "Windows", "About"};
 
-        const float nav_w = 220.0f * ImGui::GetIO().FontGlobalScale;
+        const float nav_w = 220.0f * Theme::Scale();
         ImGui::BeginChild("##settings_nav", ImVec2(nav_w, 0), true);
         ImGui::TextDisabled("SETTINGS");
         ImGui::Spacing();
@@ -490,8 +446,10 @@ namespace Settings {
 
         ImGui::SameLine();
         ImGui::BeginChild("##settings_page", ImVec2(0, 0), true);
-        ImGui::Text("%s", kSections[section]);
-        ImGui::Spacing();
+        {
+            Theme::FontScope heading(Theme::Font::Heading);
+            ImGui::TextUnformatted(kSections[section]);
+        }
         switch (section) {
             case 0: AppearanceSection(v); break;
             case 1: ConnectionSection(v); break;

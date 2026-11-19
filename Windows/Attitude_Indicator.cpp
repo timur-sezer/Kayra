@@ -197,7 +197,7 @@ namespace AttitudeIndicator {
         ImGui::Dummy(ImVec2(size, size));
     }
 
-    void ShowWindow(bool* p_open)
+    void ShowWindow(bool* p_open, float fill)
     {
         if (p_open && !*p_open)
             return;
@@ -221,22 +221,17 @@ namespace AttitudeIndicator {
                 ImGui::EndPopup();
             }
 
-            const float text_h = ImGui::GetTextLineHeightWithSpacing();
+            // Same geometry as the image gauges: the dial fills and is centered in the window.
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
             const ImVec2 avail = ImGui::GetContentRegionAvail();
-            const float size = std::min(avail.x, avail.y - text_h);
+            const float size = std::min(avail.x, avail.y) * fill;
 
             if (size > 0.0f) {
-                // Center the dial horizontally.
-                const float pad_x = (avail.x - size) * 0.5f;
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad_x);
+                ImGui::SetCursorScreenPos(ImVec2(origin.x + (avail.x - size) * 0.5f, origin.y + (avail.y - size) * 0.5f));
                 Draw(g_state.pitch, g_state.roll, size);
-
-                char readout[64];
-                snprintf(readout, sizeof(readout), "Pitch %+5.1f   Roll %+6.1f", g_state.pitch, g_state.roll);
-                const float tw = ImGui::CalcTextSize(readout).x;
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail.x - tw) * 0.5f));
-                ImGui::TextUnformatted(readout);
             }
+            ImGui::SetCursorScreenPos(origin);
+            ImGui::Dummy(avail);
         }
         ImGui::End();
     }

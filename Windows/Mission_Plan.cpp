@@ -2,7 +2,10 @@
 
 #include "File_Dialog.h"
 #include "Mission_Export.h"
+#include "Node_Editor_View.h"
 #include "Settings.h"
+#include "Terminal.h"
+#include "Theme.h"
 #include "backend.h"
 #include "MapWidget.h"
 #include "imgui.h"
@@ -37,13 +40,15 @@ namespace MissionPlan {
         constexpr int kFrameMission  = 2;  // MAV_FRAME_MISSION: no position
         constexpr int kFrameRelAlt   = 6;  // MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
 
-        const ImVec4 kGreen  = ImVec4(0.16f, 0.80f, 0.40f, 1.0f);
-        const ImVec4 kYellow = ImVec4(0.95f, 0.75f, 0.20f, 1.0f);
-        const ImVec4 kRed    = ImVec4(0.95f, 0.30f, 0.30f, 1.0f);
+        // Status colors come from the theme (they differ between dark and light).
+#define kGreen  (Theme::P().good)
+#define kYellow (Theme::P().warn)
+#define kRed    (Theme::P().bad)
 
         using Item = backend::MissionItem;
 
         std::unique_ptr<MapWidget> g_map;
+        std::unique_ptr<MapWidget> g_flight_map;  // Flight tab: same data, own view, no editing
         bool g_had_vehicle = false;
 
         // The plan being edited. Items keep the vehicle's seq while unmodified.
@@ -270,6 +275,7 @@ namespace MissionPlan {
                 wps.push_back(w);
                 g_map_to_plan.push_back(int(i));
             }
+            if (g_flight_map) g_flight_map->setMission(wps);
             g_map->setMission(std::move(wps));
             g_map_rev = g_plan_rev;
         }
@@ -326,7 +332,7 @@ namespace MissionPlan {
 
             // Tile source, right-aligned on the row if it fits
             int& source = Settings::Get().tile_source;
-            const float combo_w = std::min(260.0f * ImGui::GetIO().FontGlobalScale,
+            const float combo_w = std::min(260.0f * Theme::Scale(),
                                            ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x);
             ImGui::SameLine();
             if (ImGui::GetContentRegionAvail().x < combo_w)
@@ -422,14 +428,11 @@ namespace MissionPlan {
             return -1;
         }
 
-        // Snake grid: left to right, then right to left on the next row, so links stay short.
+        // Reading order: rows left to right, so every link points forward (only the row wrap goes back).
         ImVec2 AutoPosition(int slot)
         {
             const int cols = 4;
-            const int row = slot / cols;
-            int col = slot % cols;
-            if (row % 2) col = cols - 1 - col;
-            return ImVec2(col * 260.0f, row * 200.0f);
+            return ImVec2((slot % cols) * 300.0f, (slot / cols) * 250.0f);
         }
 
         ImVec4 HeaderColor(int command)
@@ -467,16 +470,124 @@ namespace MissionPlan {
             g_graph_fit_pending = true;
         }
 
-        void NodeHeader(unsigned uid, const ImVec4& color, ImVec2 header_max)
+        // ---- Node drawing ----
+        //
+        // A node:  (o) [3] Waypoint ............ NEXT (o)     <- header: in pin, number badge, name, state, out pin
+        //          Position   47.398821, 8.547587
+        //          Altitude   [ 40.0 m      ]
+        //          Hold       [ 0 s         ]
+        //          Leg        112 m  ·  045°                 <- distance/bearing from the previous point
+
+        enum class NodeState { Planned, Next, Flown };
+
+        float NodeWidth() { return 230.0f * Theme::Scale(); }
+
+        // Pin: a small ring that is filled when a link is attached.
+        void PinIcon(ed::PinId id, ed::PinKind kind, bool connected, const ImVec4& color)
+        {
+            const float r = 5.5f * Theme::Scale();
+            ed::BeginPin(id, kind);
+            ed::PinPivotAlignment(ImVec2(kind == ed::PinKind::Input ? 0.0f : 1.0f, 0.5f));
+            ed::PinPivotSize(ImVec2(0, 0));
+            ImGui::Dummy(ImVec2(r * 2.0f, r * 2.0f));
+            const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+            const ImVec2 c((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            if (connected) dl->AddCircleFilled(c, r, Theme::Col(color));
+            else           dl->AddCircleFilled(c, r, Theme::Col(Theme::P().surface));
+            dl->AddCircle(c, r, Theme::Col(color), 0, 1.6f);
+            ed::EndPin();
+        }
+
+        // Numbered (or lettered) colored disc in front of the node name.
+        void Badge(const char* text, const ImVec4& color)
+        {
+            const float d = ImGui::GetTextLineHeight() + 4.0f * Theme::Scale();
+            ImGui::Dummy(ImVec2(d, d));
+            const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+            const ImVec2 c((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddCircleFilled(c, d * 0.5f, Theme::Col(color));
+            const ImVec2 ts = ImGui::CalcTextSize(text);
+            dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(255, 255, 255, 255), text);
+        }
+
+        // Small rounded state label ("NEXT", "DONE") drawn right-aligned before the out pin.
+        void StateChip(const char* text, const ImVec4& color, float right_x)
+        {
+            ImGui::PushFont(Theme::Get(Theme::Font::Small));
+            const ImVec2 ts = ImGui::CalcTextSize(text);
+            const float pad = 5.0f * Theme::Scale();
+            const ImVec2 cur = ImGui::GetCursorScreenPos();
+            const float h = ImGui::GetTextLineHeight();
+            ImGui::SetCursorScreenPos(ImVec2(right_x - ts.x - pad * 2.0f, cur.y));
+            ImGui::Dummy(ImVec2(ts.x + pad * 2.0f, h));
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(ImVec2(a.x, a.y - 1), ImVec2(b.x, b.y + 1), Theme::Col(color, 0.18f), h);
+            dl->AddText(ImVec2(a.x + pad, a.y + (h - ts.y) * 0.5f), Theme::Col(color), text);
+            ImGui::PopFont();
+        }
+
+        // Header row shared by all nodes. Returns the bottom of the header (for the tinted band).
+        float NodeHeaderRow(unsigned uid, const char* badge, const char* name, const ImVec4& color,
+                            NodeState state, bool has_in, bool in_linked, bool out_linked)
+        {
+            const float width = NodeWidth();
+            const float x0 = ImGui::GetCursorScreenPos().x;
+            const ImGuiStyle& s = ImGui::GetStyle();
+            const float pin_d = 11.0f * Theme::Scale();
+            const ImVec4 pin_col = state == NodeState::Flown ? Theme::P().text_faint : color;
+
+            ImGui::BeginGroup();
+            if (has_in) PinIcon(InPin(uid), ed::PinKind::Input, in_linked, pin_col);
+            else        ImGui::Dummy(ImVec2(pin_d, pin_d));
+            ImGui::SameLine();
+            Badge(badge, state == NodeState::Flown ? Theme::P().text_faint : color);
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            {
+                Theme::FontScope f(Theme::Font::Medium);
+                ImGui::TextUnformatted(name);
+            }
+            const float right = x0 + width - pin_d - s.ItemSpacing.x;
+            if (state != NodeState::Planned) {
+                ImGui::SameLine();
+                StateChip(state == NodeState::Next ? "NEXT" : "DONE",
+                          state == NodeState::Next ? Theme::P().good : Theme::P().text_dim, right);
+            }
+            ImGui::SameLine();
+            ImGui::SetCursorScreenPos(ImVec2(x0 + width - pin_d, ImGui::GetCursorScreenPos().y));
+            PinIcon(OutPin(uid), ed::PinKind::Output, out_linked, pin_col);
+            ImGui::EndGroup();
+            const float bottom = ImGui::GetItemRectMax().y;
+            ImGui::Dummy(ImVec2(width, 6.0f * Theme::Scale()));
+            return bottom;
+        }
+
+        // Tinted band behind the header plus a colored top edge (drawn after EndNode, behind the content).
+        void NodeHeaderBand(unsigned uid, const ImVec4& color, float header_bottom, NodeState state)
         {
             ImDrawList* dl = ed::GetNodeBackgroundDrawList(GraphNode(uid));
             if (!dl) return;
             const ImVec2 pos = ed::GetNodePosition(GraphNode(uid));
             const ImVec2 size = ed::GetNodeSize(GraphNode(uid));
             const float rounding = ed::GetStyle().NodeRounding;
-            dl->AddRectFilled(ImVec2(pos.x + 1, pos.y + 1), ImVec2(pos.x + size.x - 1, header_max.y + 4),
-                              ImGui::GetColorU32(ImVec4(color.x, color.y, color.z, 0.75f)), rounding,
-                              ImDrawFlags_RoundCornersTop);
+            const float tint = state == NodeState::Flown ? 0.06f : 0.16f;
+            const ImVec2 a(pos.x + 1, pos.y + 1), b(pos.x + size.x - 1, header_bottom + 4.0f * Theme::Scale());
+            dl->AddRectFilled(a, b, Theme::Col(color, tint), rounding, ImDrawFlags_RoundCornersTop);
+            dl->AddRectFilled(a, ImVec2(b.x, a.y + 3.0f), Theme::Col(color, state == NodeState::Flown ? 0.35f : 1.0f),
+                              rounding, ImDrawFlags_RoundCornersTop);
+            dl->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), Theme::Col(Theme::P().border));
+        }
+
+        // "Label   value" rows inside a node.
+        float LabelColumn() { return 72.0f * Theme::Scale(); }
+        void RowLabel(const char* label)
+        {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%s", label);
+            ImGui::SameLine(LabelColumn());
         }
 
         void PlaceNode(unsigned uid, int slot)
@@ -488,87 +599,123 @@ namespace MissionPlan {
             g_placed.insert(uid);
         }
 
-        void StartNode(float width)
+        const ImVec4 kHomeColor(0.55f, 0.35f, 0.85f, 1.0f);
+
+        void StartNode()
         {
             PlaceNode(kStartUid, 0);
             ed::BeginNode(GraphNode(kStartUid));
-            ImGui::TextUnformatted("H   Home / Start");
-            const ImVec2 header_max = ImGui::GetItemRectMax();
-            ImGui::Dummy(ImVec2(width, 4));
-            if (HasHome()) ImGui::TextDisabled("%.6f, %.6f", backend::Home_latitude.load(), backend::Home_longitude.load());
-            else           ImGui::TextDisabled("Home not known yet");
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + width - ImGui::CalcTextSize("Out >").x);
-            ed::BeginPin(OutPin(kStartUid), ed::PinKind::Output);
-            ed::PinPivotAlignment(ImVec2(1.0f, 0.5f));
-            ImGui::TextUnformatted("Out >");
-            ed::EndPin();
+            const float hb = NodeHeaderRow(kStartUid, "H", "Home", kHomeColor, NodeState::Planned,
+                                           false, false, !g_plan.empty());
+            RowLabel("Position");
+            if (HasHome()) ImGui::Text("%.6f, %.6f", backend::Home_latitude.load(), backend::Home_longitude.load());
+            else           ImGui::TextDisabled("not known yet");
+            RowLabel("Mission");
+            const double total = PlanDistanceM();
+            if (g_plan.empty()) ImGui::TextDisabled("empty");
+            else ImGui::Text("%d items  \xC2\xB7  %s", int(g_plan.size()), FormatDistance(total).c_str());
             ed::EndNode();
-            NodeHeader(kStartUid, ImVec4(0.55f, 0.25f, 0.80f, 1.0f), header_max);
+            NodeHeaderBand(kStartUid, kHomeColor, hb, NodeState::Planned);
         }
 
-        void ItemNode(int index, int next_plan, float width)
+        // Distance and bearing from the previous positioned point (or home) to item `index`.
+        bool LegFrom(int index, double& dist, double& bearing)
+        {
+            const Item& it = g_plan[index];
+            if (!it.positional) return false;
+            for (int i = index - 1; i >= -1; --i) {
+                double lat, lon;
+                if (i >= 0) {
+                    if (!g_plan[i].positional) continue;
+                    lat = g_plan[i].latitude_deg; lon = g_plan[i].longitude_deg;
+                }
+                else {
+                    if (!HasHome()) return false;
+                    lat = backend::Home_latitude; lon = backend::Home_longitude;
+                }
+                dist = DistanceM(lat, lon, it.latitude_deg, it.longitude_deg);
+                bearing = BearingDeg(lat, lon, it.latitude_deg, it.longitude_deg);
+                return true;
+            }
+            return false;
+        }
+
+        bool DragRow(const char* label, const char* id, float* v, float speed, float lo, float hi, const char* fmt)
+        {
+            RowLabel(label);
+            ImGui::SetNextItemWidth(NodeWidth() - LabelColumn());
+            return ImGui::DragFloat(id, v, speed, lo, hi, fmt);
+        }
+
+        void ItemNode(int index, int next_plan)
         {
             Item& it = g_plan[index];
             const unsigned uid = it.uid;
             PlaceNode(uid, index + 1);
 
-            const bool is_next = index == next_plan;
-            if (is_next) ed::PushStyleColor(ed::StyleColor_NodeBorder, kGreen);
+            const NodeState state = index == next_plan ? NodeState::Next
+                                  : (next_plan >= 0 && index < next_plan) ? NodeState::Flown
+                                                                          : NodeState::Planned;
+            const ImVec4 color = HeaderColor(it.command);
+            if (state == NodeState::Next) ed::PushStyleColor(ed::StyleColor_NodeBorder, kGreen);
             ed::BeginNode(GraphNode(uid));
             ImGui::PushID(int(uid));
+            if (state == NodeState::Flown) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.55f);
 
+            char badge[8];
+            snprintf(badge, sizeof(badge), "%d", index + 1);
             const std::string name = ItemName(it);
-            if (is_next) ImGui::Text("%d   %s  (next)", index + 1, name.c_str());
-            else         ImGui::Text("%d   %s", index + 1, name.c_str());
-            const ImVec2 header_max = ImGui::GetItemRectMax();
-            ImGui::Dummy(ImVec2(width, 4));
+            const float hb = NodeHeaderRow(uid, badge, name.c_str(), color, state,
+                                           true, true, index + 1 < int(g_plan.size()));
 
-            // Pins
-            ed::BeginPin(InPin(uid), ed::PinKind::Input);
-            ed::PinPivotAlignment(ImVec2(0.0f, 0.5f));
-            ImGui::TextUnformatted("> In");
-            ed::EndPin();
-            ImGui::SameLine(width - ImGui::CalcTextSize("Out >").x + ImGui::GetStyle().ItemSpacing.x);
-            ed::BeginPin(OutPin(uid), ed::PinKind::Output);
-            ed::PinPivotAlignment(ImVec2(1.0f, 0.5f));
-            ImGui::TextUnformatted("Out >");
-            ed::EndPin();
-
-            // Body
             if (it.positional) {
-                ImGui::TextDisabled("%.6f, %.6f", it.latitude_deg, it.longitude_deg);
-                ImGui::SetNextItemWidth(width);
-                if (ImGui::DragFloat("##alt", &it.altitude_m, 0.5f, 0.0f, 5000.0f, "Alt %.1f m"))
+                RowLabel("Position");
+                ImGui::Text("%.6f, %.6f", it.latitude_deg, it.longitude_deg);
+                if (DragRow("Altitude", "##alt", &it.altitude_m, 0.5f, 0.0f, 5000.0f, "%.1f m"))
                     MarkEdited();
             }
-            if (it.command == kCmdWaypoint || it.command == kCmdLoiterTime) {
-                ImGui::SetNextItemWidth(width);
-                if (ImGui::DragFloat("##hold", &it.param1, 0.5f, 0.0f, 3600.0f,
-                                     it.command == kCmdWaypoint ? "Hold %.0f s" : "Loiter %.0f s"))
-                    MarkEdited();
+            if (it.command == kCmdWaypoint) {
+                if (DragRow("Hold", "##hold", &it.param1, 0.5f, 0.0f, 3600.0f, "%.0f s")) MarkEdited();
+            }
+            else if (it.command == kCmdLoiterTime) {
+                if (DragRow("Loiter", "##hold", &it.param1, 0.5f, 0.0f, 3600.0f, "%.0f s")) MarkEdited();
+            }
+            else if (it.command == 178) {  // change speed: param2 = speed
+                if (DragRow("Speed", "##speed", &it.param2, 0.1f, 0.0f, 100.0f, "%.1f m/s")) MarkEdited();
             }
             else if (it.command == kCmdRtl) {
-                ImGui::TextDisabled("Flies back to home");
+                RowLabel("Action");
+                ImGui::TextUnformatted("Fly back to home");
             }
             else if (!it.positional) {
-                ImGui::TextDisabled("Params %.1f %.1f %.1f %.1f", it.param1, it.param2, it.param3, it.param4);
+                RowLabel("Params");
+                ImGui::TextDisabled("%.1f  %.1f  %.1f  %.1f", it.param1, it.param2, it.param3, it.param4);
             }
 
+            double dist, bearing;
+            if (LegFrom(index, dist, bearing) && dist >= 1.0) {
+                RowLabel("Leg");
+                ImGui::TextDisabled("%s  \xC2\xB7  %03.0f\xC2\xB0", FormatDistance(dist).c_str(), bearing);
+            }
+
+            if (state == NodeState::Flown) ImGui::PopStyleVar();
             ImGui::PopID();
             ed::EndNode();
-            if (is_next) ed::PopStyleColor();
-            NodeHeader(uid, HeaderColor(it.command), header_max);
+            if (state == NodeState::Next) ed::PopStyleColor();
+            NodeHeaderBand(uid, color, hb, state);
         }
 
         void GraphLinks(int next_plan)
         {
+            const Theme::Palette& p = Theme::P();
             unsigned prev = kStartUid;
             for (int i = 0; i < int(g_plan.size()); ++i) {
                 const unsigned uid = g_plan[i].uid;
-                ImVec4 color = ImVec4(1.0f, 0.78f, 0.16f, 1.0f);              // still to fly
-                if (next_plan >= 0 && i < next_plan) color = ImVec4(0.6f, 0.6f, 0.6f, 0.7f);  // flown
-                if (i == next_plan) color = kGreen;
-                ed::Link(LinkInto(uid), OutPin(prev), InPin(uid), color, i == next_plan ? 3.5f : 2.5f);
+                ImVec4 color = p.accent;                                   // still to fly
+                float thickness = 2.5f;
+                if (next_plan >= 0 && i < next_plan) { color = p.text_faint; thickness = 2.0f; }  // flown
+                if (i == next_plan) { color = p.good; thickness = 3.5f; }
+                ed::Link(LinkInto(uid), OutPin(prev), InPin(uid), color, thickness);
                 prev = uid;
             }
             // Animate the leg being flown
@@ -580,7 +727,7 @@ namespace MissionPlan {
 
         void GraphCreateAndDelete()
         {
-            if (ed::BeginCreate(ImVec4(1, 1, 1, 1), 2.0f)) {
+            if (ed::BeginCreate(Theme::P().text, 2.0f)) {
                 ed::PinId a, b;
                 if (ed::QueryNewLink(&a, &b)) {
                     uintptr_t from = a.Get(), to = b.Get();
@@ -588,7 +735,7 @@ namespace MissionPlan {
                     const bool valid = KindOf(from) == 3 && KindOf(to) == 2
                                     && UidOf(from) != UidOf(to) && UidOf(to) != kStartUid;
                     if (!valid)
-                        ed::RejectNewItem(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), 2.0f);
+                        ed::RejectNewItem(kRed, 2.0f);
                     else if (ed::AcceptNewItem(kGreen, 3.0f))
                         MoveAfter(UidOf(from), UidOf(to));
                 }
@@ -614,19 +761,46 @@ namespace MissionPlan {
             }
         }
 
-        // New item for the graph menus: just east of the item it follows.
-        void AddFromGraph(int command, ImVec2 canvas_pos)
+        // New item from the graph: inserted after the selected item; placed at `canvas_pos` when given,
+        // otherwise just below the node it follows.
+        void AddFromGraph(int command, const ImVec2* canvas_pos)
         {
+            const unsigned after_uid = (g_selected >= 0 && g_selected < int(g_plan.size())) ? g_plan[g_selected].uid
+                                                                                           : (g_plan.empty() ? kStartUid : g_plan.back().uid);
+            if (g_selected < 0 && !g_plan.empty()) g_selected = int(g_plan.size()) - 1;
             Item it;
             SetCommand(it, g_selected + 1, command);
-            if (it.positional) {
+            if (it.positional && command != kCmdTakeoff && command != kCmdLand) {
                 double lat, lon;
                 DefaultPosition(g_selected + 1, lat, lon);
                 it.latitude_deg = lat;
                 it.longitude_deg = lon + (g_plan.empty() ? 0.0 : 0.0005);  // ~35 m east
             }
             InsertItem(it);
-            g_place_at[g_plan[g_selected].uid] = canvas_pos;
+            ImVec2 pos;
+            if (canvas_pos) pos = *canvas_pos;
+            else {
+                const ImVec2 p = ed::GetNodePosition(GraphNode(after_uid));
+                const ImVec2 s = ed::GetNodeSize(GraphNode(after_uid));
+                pos = ImVec2(p.x, p.y + s.y + 30.0f);
+            }
+            g_place_at[g_plan[g_selected].uid] = pos;
+        }
+
+        // Menu entries for adding items (shared by the toolbar button and the background menu).
+        void AddItemsMenu(const ImVec2* canvas_pos)
+        {
+            struct { const char* label; int command; } entries[] = {
+                {"Waypoint", kCmdWaypoint}, {"Takeoff", kCmdTakeoff}, {"Loiter (time)", kCmdLoiterTime},
+                {"Change speed", 178}, {"Land", kCmdLand}, {"Return to launch", kCmdRtl},
+            };
+            for (const auto& e : entries) {
+                ImGui::PushStyleColor(ImGuiCol_Text, HeaderColor(e.command));
+                ImGui::Bullet();
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+                if (ImGui::MenuItem(e.label)) AddFromGraph(e.command, canvas_pos);
+            }
         }
 
         void GraphMenus()
@@ -647,29 +821,33 @@ namespace MissionPlan {
             if (ImGui::BeginPopup("##graph_node_menu")) {
                 const int index = IndexOfUid(menu_uid);
                 if (menu_uid == kStartUid) {
-                    ImGui::TextDisabled("Home / Start");
+                    ImGui::TextDisabled("Home");
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Show on map", nullptr, false, HasHome()))
+                        g_map->setCenter(backend::Home_latitude, backend::Home_longitude);
                 }
                 else if (index >= 0) {
                     ImGui::TextDisabled("Item %d: %s", index + 1, ItemName(g_plan[index]).c_str());
                     ImGui::Separator();
+                    if (ImGui::MenuItem("Show on map", nullptr, false, g_plan[index].positional))
+                        g_map->setCenter(g_plan[index].latitude_deg, g_plan[index].longitude_deg);
                     if (ImGui::MenuItem("Move earlier", nullptr, false, index > 0)) MoveItem(index, -1);
                     if (ImGui::MenuItem("Move later", nullptr, false, index + 1 < int(g_plan.size()))) MoveItem(index, +1);
-                    if (ImGui::MenuItem("Delete")) { DeleteItem(index); g_placed.erase(menu_uid); }
+                    ImGui::Separator();
+                    ImGui::PushStyleColor(ImGuiCol_Text, kRed);
+                    if (ImGui::MenuItem("Delete", "Del")) { DeleteItem(index); g_placed.erase(menu_uid); }
+                    ImGui::PopStyleColor();
                 }
                 ImGui::EndPopup();
             }
 
             if (ImGui::BeginPopup("##graph_menu")) {
-                ImGui::TextDisabled("Insert after the selected item");
+                ImGui::TextDisabled("Add after the selected item");
                 ImGui::Separator();
-                if (ImGui::MenuItem("Add waypoint"))         AddFromGraph(kCmdWaypoint, menu_canvas_pos);
-                if (ImGui::MenuItem("Add takeoff"))          AddFromGraph(kCmdTakeoff, menu_canvas_pos);
-                if (ImGui::MenuItem("Add loiter (time)"))    AddFromGraph(kCmdLoiterTime, menu_canvas_pos);
-                if (ImGui::MenuItem("Add land"))             AddFromGraph(kCmdLand, menu_canvas_pos);
-                if (ImGui::MenuItem("Add return to launch")) AddFromGraph(kCmdRtl, menu_canvas_pos);
+                AddItemsMenu(&menu_canvas_pos);
                 ImGui::Separator();
-                if (ImGui::MenuItem("Arrange nodes"))        ArrangeGraph();
-                if (ImGui::MenuItem("Zoom to fit"))          g_graph_fit_pending = true;
+                if (ImGui::MenuItem("Arrange nodes")) ArrangeGraph();
+                if (ImGui::MenuItem("Zoom to fit"))   g_graph_fit_pending = true;
                 ImGui::EndPopup();
             }
             ed::Resume();
@@ -693,6 +871,92 @@ namespace MissionPlan {
                 else      ed::ClearSelection();
                 g_graph_selected_uid = want;
             }
+            // Double-click a node: center the map on it
+            if (const ed::NodeId dbl = ed::GetDoubleClickedNode()) {
+                const unsigned uid = UidOf(dbl.Get());
+                const int index = IndexOfUid(uid);
+                if (uid == kStartUid && HasHome())
+                    g_map->setCenter(backend::Home_latitude, backend::Home_longitude);
+                else if (index >= 0 && g_plan[index].positional)
+                    g_map->setCenter(g_plan[index].latitude_deg, g_plan[index].longitude_deg);
+            }
+        }
+
+        // Node editor colors follow the app theme (re-applied every frame, so theme changes show at once).
+        void ApplyGraphStyle()
+        {
+            const Theme::Palette& p = Theme::P();
+            ed::SetCurrentEditor(g_graph);
+            ed::Style& st = ed::GetStyle();
+            auto a = [](ImVec4 c, float alpha) { c.w = alpha; return c; };
+            st.NodeRounding = 10.0f;
+            st.NodeBorderWidth = 1.0f;
+            st.HoveredNodeBorderWidth = 2.0f;
+            st.SelectedNodeBorderWidth = 2.5f;
+            st.NodePadding = ImVec4(10, 8, 10, 10);
+            st.PinRounding = 6.0f;
+            st.PinBorderWidth = 0.0f;
+            st.PinRadius = 0.0f;
+            st.LinkStrength = 100.0f;
+            st.FlowDuration = 1.2f;
+            st.FlowMarkerDistance = 24.0f;
+            st.Colors[ed::StyleColor_Bg]                 = p.bg;
+            st.Colors[ed::StyleColor_Grid]               = a(p.border, 0.35f);
+            st.Colors[ed::StyleColor_NodeBg]             = p.surface;
+            st.Colors[ed::StyleColor_NodeBorder]         = p.border;
+            st.Colors[ed::StyleColor_HovNodeBorder]      = a(p.accent, 0.6f);
+            st.Colors[ed::StyleColor_SelNodeBorder]      = p.accent;
+            st.Colors[ed::StyleColor_NodeSelRect]        = a(p.accent, 0.10f);
+            st.Colors[ed::StyleColor_NodeSelRectBorder]  = a(p.accent, 0.6f);
+            st.Colors[ed::StyleColor_HovLinkBorder]      = a(p.accent, 0.6f);
+            st.Colors[ed::StyleColor_SelLinkBorder]      = p.accent;
+            st.Colors[ed::StyleColor_PinRect]            = a(p.accent, 0.20f);
+            st.Colors[ed::StyleColor_PinRectBorder]      = a(p.accent, 0.0f);
+            st.Colors[ed::StyleColor_Flow]               = p.good;
+            st.Colors[ed::StyleColor_FlowMarker]         = p.good;
+            ed::SetCurrentEditor(nullptr);
+        }
+
+        void GraphToolbar()
+        {
+            if (Theme::PrimaryButton("+ Add"))
+                ImGui::OpenPopup("##graph_add");
+            if (ImGui::BeginPopup("##graph_add")) {
+                ImGui::TextDisabled("Add after the selected item");
+                ImGui::Separator();
+                ed::SetCurrentEditor(g_graph);  // AddFromGraph reads node positions
+                AddItemsMenu(nullptr);
+                ed::SetCurrentEditor(nullptr);
+                ImGui::EndPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Arrange"))
+                ArrangeGraph();
+            ImGui::SameLine();
+            if (ImGui::Button("Fit"))
+                g_graph_fit_pending = true;
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted("Drag from a node's right dot to another node's left dot to fly it next");
+                ImGui::TextUnformatted("Double-click a node to show it on the map");
+                ImGui::TextUnformatted("Del deletes the selected nodes");
+                ImGui::TextUnformatted("Right-click: add items / item menu");
+                ImGui::TextUnformatted("Right-drag pans, wheel zooms");
+                ImGui::EndTooltip();
+            }
+
+            // Summary, right-aligned
+            char summary[96];
+            if (g_plan.empty()) snprintf(summary, sizeof(summary), "No mission items");
+            else snprintf(summary, sizeof(summary), "%d items  \xC2\xB7  %s%s", int(g_plan.size()),
+                          FormatDistance(PlanDistanceM()).c_str(), g_dirty ? "  \xC2\xB7  not uploaded" : "");
+            const float w = ImGui::CalcTextSize(summary).x;
+            ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 12.0f,
+                                     ImGui::GetWindowContentRegionMax().x - w));
+            if (g_dirty && !g_plan.empty()) ImGui::TextColored(kYellow, "%s", summary);
+            else                            ImGui::TextDisabled("%s", summary);
         }
 
         void NodeEditorView()
@@ -702,36 +966,45 @@ namespace MissionPlan {
                 config.SettingsFile = nullptr;  // layout is derived from the mission, nothing to save
                 g_graph = ed::CreateEditor(&config);
             }
+            ApplyGraphStyle();
+            GraphToolbar();
 
-            if (ImGui::Button("Arrange"))
-                ArrangeGraph();
-            ImGui::SameLine();
-            if (ImGui::Button("Zoom to fit"))
-                g_graph_fit_pending = true;
-            ImGui::SameLine(0.0f, 16.0f);
-            ImGui::TextDisabled("Drag Out -> In to reorder  \xC2\xB7  Del deletes  \xC2\xB7  right-click to add  \xC2\xB7  right-drag pans");
+            // A mission appearing (download, first item) or being cleared re-frames the view.
+            static bool had_items = false;
+            if (had_items != !g_plan.empty()) { had_items = !g_plan.empty(); g_graph_fit_pending = true; }
 
             const int next_map = NextMapIndex();
             int next_plan = -1;
             if (next_map >= 0 && next_map < int(g_map_to_plan.size())) next_plan = g_map_to_plan[next_map];
             else if (next_map >= int(g_map_to_plan.size()) && !g_map_to_plan.empty()) next_plan = int(g_plan.size());
 
+            const ImVec2 canvas_min = ImGui::GetCursorScreenPos();
+            const ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+
             ed::SetCurrentEditor(g_graph);
             ed::Begin("##mission_graph");
-            const float width = 190.0f * ImGui::GetIO().FontGlobalScale;
-            StartNode(width);
+            StartNode();
             for (int i = 0; i < int(g_plan.size()); ++i)
-                ItemNode(i, next_plan, width);
+                ItemNode(i, next_plan);
             GraphLinks(next_plan);
             GraphCreateAndDelete();
             GraphMenus();
             GraphSelectionSync();
             if (g_graph_fit_pending && ImGui::GetFrameCount() > 2) {
-                ed::NavigateToContent(0.0f);
+                NodeEditorView::FitContent(g_graph, canvas_size);
                 g_graph_fit_pending = false;
             }
             ed::End();
             ed::SetCurrentEditor(nullptr);
+
+            // Empty state hint
+            if (g_plan.empty()) {
+                const char* hint = "Right-click or use + Add to build a mission, or click the map";
+                const ImVec2 ts = ImGui::CalcTextSize(hint);
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(canvas_min.x + (canvas_size.x - ts.x) * 0.5f, canvas_min.y + canvas_size.y - ts.y - 16.0f),
+                    Theme::Col(Theme::P().text_faint), hint);
+            }
         }
 
         // ---- Export ----
@@ -804,7 +1077,7 @@ namespace MissionPlan {
 
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - button_w);
             ImGui::BeginDisabled(g_plan.empty());
-            if (ImGui::Button(label, ImVec2(button_w, 0)))
+            if (Theme::PrimaryButton(label, ImVec2(button_w, 0)))
                 ExportJson();
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -816,15 +1089,27 @@ namespace MissionPlan {
 
         void PlanHeader()
         {
-            ImGui::Text("Mission");
-            ImGui::SameLine();
-            if (g_plan.empty() && !g_dirty)  ImGui::TextDisabled("(empty)");
-            else if (g_dirty)                ImGui::TextColored(kYellow, "Not uploaded");
-            else                             ImGui::TextColored(kGreen, "Same as vehicle");
+            {
+                Theme::FontScope heading(Theme::Font::Heading);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("Mission");
+            }
+            ImGui::SameLine(0.0f, 10.0f * Theme::Scale());
+            if (g_plan.empty() && !g_dirty)  Theme::Pill("Empty", Theme::P().text_faint);
+            else if (g_dirty)                Theme::Pill("Not uploaded", kYellow);
+            else                             Theme::Pill("Same as vehicle", kGreen);
 
-            ImGui::PushTextWrapPos(0.0f);
-            ImGui::TextDisabled("%s", backend::mission_status().c_str());
-            ImGui::PopTextWrapPos();
+            // Backend status only when it says something the pill and summary don't
+            // (transfers, errors), not the routine "8 waypoints (9 items)".
+            const std::string status = backend::mission_status();
+            int n1 = 0, n2 = 0;
+            const bool routine = std::sscanf(status.c_str(), "%d waypoints (%d items)", &n1, &n2) == 2
+                              || status == "No mission" || status == "No mission on vehicle";
+            if (!routine) {
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", status.c_str());
+                ImGui::PopTextWrapPos();
+            }
 
             if (g_vehicle_changed) {
                 ImGui::TextColored(kYellow, "The vehicle's mission changed.");
@@ -841,7 +1126,7 @@ namespace MissionPlan {
             const float w = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 
             ImGui::BeginDisabled(!connected || busy || g_plan.empty());
-            if (ImGui::Button("Upload to vehicle", ImVec2(w, 0))) {
+            if (Theme::PrimaryButton("Upload to vehicle", ImVec2(w, 0))) {
                 g_force_sync = true;
                 if (!backend::upload_mission(g_plan))
                     g_force_sync = false;
@@ -894,7 +1179,7 @@ namespace MissionPlan {
             ImGui::EndDisabled();
 
             ImGui::BeginDisabled(!connected || busy || backend::Mission_total == 0);
-            if (ImGui::Button("Delete mission on vehicle...", ImVec2(-FLT_MIN, 0)))
+            if (Theme::DangerButton("Delete mission on vehicle...", ImVec2(-FLT_MIN, 0)))
                 ImGui::OpenPopup("Delete vehicle mission?");
             ImGui::EndDisabled();
             if (ImGui::BeginPopupModal("Delete vehicle mission?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -916,12 +1201,15 @@ namespace MissionPlan {
             for (const Item& it : g_plan) waypoints += it.positional;
             const double dist = PlanDistanceM();
             const double t = dist / std::max(0.5f, Settings::Get().plan_speed_m_s);
-            ImGui::TextDisabled("%d items, %d with position", int(g_plan.size()), waypoints);
-            ImGui::TextDisabled("Distance %s   ~%d:%02d min at %.0f m/s", FormatDistance(dist).c_str(),
+            ImGui::TextDisabled("%d items \xC2\xB7 %d waypoints \xC2\xB7 %s \xC2\xB7 ~%d:%02d at %.0f m/s",
+                                int(g_plan.size()), waypoints, FormatDistance(dist).c_str(),
                                 int(t) / 60, int(t) % 60, Settings::Get().plan_speed_m_s);
 
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
-            ImGui::DragFloat("New waypoint altitude", &Settings::Get().default_altitude_m, 0.5f, 1.0f, 1000.0f, "%.0f m");
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("New waypoints at");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(std::min(120.0f * Theme::Scale(), ImGui::GetContentRegionAvail().x));
+            ImGui::DragFloat("##newalt", &Settings::Get().default_altitude_m, 0.5f, 1.0f, 1000.0f, "%.0f m");
         }
 
         void ItemList(float height)
@@ -1045,9 +1333,7 @@ namespace MissionPlan {
             if (ImGui::Button("Move down", ImVec2(w, 0))) MoveItem(g_selected, +1);
             ImGui::EndDisabled();
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, kRed);
-            if (ImGui::Button("Delete", ImVec2(w, 0))) DeleteItem(g_selected);
-            ImGui::PopStyleColor();
+            if (Theme::DangerButton("Delete", ImVec2(w, 0))) DeleteItem(g_selected);
         }
 
         // Lays itself out in one column when the window is tall, or three columns
@@ -1056,7 +1342,7 @@ namespace MissionPlan {
         {
             const ImVec2 avail = ImGui::GetContentRegionAvail();
             const float footer_h = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
-            const bool wide = avail.x > avail.y * 1.8f && avail.x > 700.0f * ImGui::GetIO().FontGlobalScale;
+            const bool wide = avail.x > avail.y * 1.8f && avail.x > 700.0f * Theme::Scale();
 
             if (!wide) {
                 ImGui::BeginChild("##panel_body", ImVec2(0, avail.y - footer_h));
@@ -1065,10 +1351,10 @@ namespace MissionPlan {
                 PlanActions();
                 ImGui::Spacing();
                 PlanSummary();
-                ImGui::SeparatorText("Items");
+                Theme::Section("Items");
                 const float editor_h = ImGui::GetFrameHeightWithSpacing() * 7.5f;
                 ItemList(std::max(ImGui::GetFrameHeight() * 4, ImGui::GetContentRegionAvail().y - editor_h));
-                ImGui::SeparatorText("Selected item");
+                Theme::Section("Selected item");
                 ItemEditor();
                 ImGui::EndChild();
             }
@@ -1087,13 +1373,13 @@ namespace MissionPlan {
 
                 ImGui::SameLine(0.0f, spacing);
                 ImGui::BeginChild("##panel_items", ImVec2(col, h));
-                ImGui::TextUnformatted("Items");
+                Theme::Section("Items");
                 ItemList(ImGui::GetContentRegionAvail().y);
                 ImGui::EndChild();
 
                 ImGui::SameLine(0.0f, spacing);
                 ImGui::BeginChild("##panel_item", ImVec2(0, h));
-                ImGui::TextUnformatted("Selected item");
+                Theme::Section("Selected item");
                 ItemEditor();
                 ImGui::EndChild();
             }
@@ -1140,13 +1426,20 @@ namespace MissionPlan {
         const Settings::Values& s = Settings::Get();
         if (!g_map) {
             g_map = std::make_unique<MapWidget>(TileCacheDir());
-            g_map->setCenter(30.0, 20.0);
-            g_map->setZoom(2.5);
+            g_flight_map = std::make_unique<MapWidget>(TileCacheDir());
+            for (MapWidget* m : {g_map.get(), g_flight_map.get()}) {
+                m->setCenter(30.0, 20.0);
+                m->setZoom(2.5);
+            }
         }
-        if (g_map->sourceIndex() != s.tile_source)
-            g_map->setSource(s.tile_source);
-        g_map->setShowTrail(s.show_trail);
+        MapWidget* const maps[] = {g_map.get(), g_flight_map.get()};
+        for (MapWidget* m : maps) {
+            if (m->sourceIndex() != s.tile_source)
+                m->setSource(s.tile_source);
+            m->setShowTrail(s.show_trail);
+        }
         g_map->setEditable(g_edit_mode);
+        g_flight_map->setEditable(false);
 
         // Vehicle
         const double lat = backend::Position_latitude;
@@ -1158,22 +1451,28 @@ namespace MissionPlan {
             if (!std::isfinite(heading)) heading = 0.0f;
             if (!g_had_vehicle) {
                 // First fix of this connection: start a new trail
-                g_map->clearTrail();
-                if (s.follow_on_connect) {
-                    g_map->setCenter(lat, lon);
-                    g_map->setZoom(17.0);
-                    g_map->setFollowVehicle(true);
+                for (MapWidget* m : maps) {
+                    m->clearTrail();
+                    if (s.follow_on_connect) {
+                        m->setCenter(lat, lon);
+                        m->setZoom(17.0);
+                        m->setFollowVehicle(true);
+                    }
                 }
             }
-            g_map->setVehicle(lat, lon, heading);
+            for (MapWidget* m : maps)
+                m->setVehicle(lat, lon, heading);
         }
         else if (g_had_vehicle) {
-            g_map->clearVehicle();
+            for (MapWidget* m : maps)
+                m->clearVehicle();
         }
         g_had_vehicle = has_pos;
 
-        if (HasHome()) g_map->setHome(backend::Home_latitude, backend::Home_longitude);
-        else           g_map->clearHome();
+        for (MapWidget* m : maps) {
+            if (HasHome()) m->setHome(backend::Home_latitude, backend::Home_longitude);
+            else           m->clearHome();
+        }
 
         // Vehicle mission -> plan (unless the user is editing)
         const int version = backend::Mission_version;
@@ -1187,6 +1486,7 @@ namespace MissionPlan {
             RebuildMapMission();
         g_map->setSelectedWaypoint(PlanToMap(g_selected));
         g_map->setNextWaypoint(NextMapIndex());
+        g_flight_map->setNextWaypoint(NextMapIndex());
     }
 
     namespace {
@@ -1211,6 +1511,7 @@ namespace MissionPlan {
         ImGui::DockBuilderDockWindow(kMapTitle, left);
         ImGui::DockBuilderDockWindow(kGraphTitle, right);
         ImGui::DockBuilderDockWindow(kPanelTitle, bottom);
+        ImGui::DockBuilderDockWindow(Terminal::kPlanTitle, bottom);  // tab next to Mission
         ImGui::DockBuilderFinish(dockspace_id);
         g_layout_built = true;
     }
@@ -1221,13 +1522,14 @@ namespace MissionPlan {
     void WindowsMenu()
     {
         Settings::Values& v = Settings::Get();
-        ImGui::SeparatorText("Mission Plan");
+        Theme::Section("Mission Plan");
         ImGui::MenuItem("Map",         nullptr, &v.plan_map);
         ImGui::MenuItem("Node editor", nullptr, &v.plan_graph);
         ImGui::MenuItem("Mission",     nullptr, &v.plan_panel);
+        ImGui::MenuItem("Terminal",    nullptr, &v.plan_terminal);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset layout")) {
-            v.plan_map = v.plan_graph = v.plan_panel = true;
+            v.plan_map = v.plan_graph = v.plan_panel = v.plan_terminal = true;
             ResetLayout();
         }
     }
@@ -1263,6 +1565,8 @@ namespace MissionPlan {
             ImGui::End();
         }
 
+        Terminal::ShowWindow(Terminal::kPlanTitle, &v.plan_terminal);
+
         if (keyboard_here)
             Shortcuts();
 
@@ -1272,8 +1576,51 @@ namespace MissionPlan {
         g_map->setSelectedWaypoint(PlanToMap(g_selected));
     }
 
+    void ShowFlightMap(bool* p_open)
+    {
+        if (!*p_open || !g_flight_map)
+            return;
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+        if (ImGui::Begin(kFlightMapTitle, p_open, flags)) {
+            bool follow = g_flight_map->followVehicle();
+            ImGui::BeginDisabled(!g_flight_map->hasVehicle());
+            if (ImGui::Checkbox("Follow", &follow))
+                g_flight_map->setFollowVehicle(follow);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Fit all"))
+                g_flight_map->fitAll();
+
+            // Next waypoint, same wording as the Mission Plan map
+            const int next = NextMapIndex();
+            const int n = int(g_map_to_plan.size());
+            const double lat = backend::Position_latitude, lon = backend::Position_longitude;
+            ImGui::SameLine(0.0f, 16.0f * Theme::Scale());
+            ImGui::AlignTextToFramePadding();
+            if (next >= 0 && next < n && std::isfinite(lat) && std::isfinite(lon)) {
+                const Item& w = g_plan[g_map_to_plan[next]];
+                ImGui::TextColored(kGreen, "Next: item %d   %s   %03.0f\xC2\xB0",
+                                   g_map_to_plan[next] + 1,
+                                   FormatDistance(DistanceM(lat, lon, w.latitude_deg, w.longitude_deg)).c_str(),
+                                   BearingDeg(lat, lon, w.latitude_deg, w.longitude_deg));
+            }
+            else if (next >= n && n > 0) {
+                ImGui::TextColored(kGreen, "Mission complete");
+            }
+            else if (!std::isfinite(lat)) {
+                ImGui::TextDisabled(backend::mavsdk_connected ? "Waiting for position..." : "No vehicle connected");
+            }
+            else {
+                ImGui::TextUnformatted("");  // ends the toolbar line so the map starts below it
+            }
+            g_flight_map->draw("##flight_map");
+        }
+        ImGui::End();
+    }
+
     void Shutdown()
     {
+        g_flight_map.reset();
         g_map.reset();
         if (g_graph) {
             ed::DestroyEditor(g_graph);

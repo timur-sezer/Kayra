@@ -286,7 +286,7 @@ int main(int argc, char** argv)
 
             TelemetryServer::Battery batt{};
             batt.voltage_v = float(14.8 + 2.0 * battery / 100.0);
-            batt.remaining_percent = float(battery);
+            batt.remaining_percent = float(battery / 100.0);  // server side expects 0..1 (client reports 0..100)
             telemetry.publish_sys_status(batt, true, true, true, true, true);
             telemetry.publish_battery(batt);
         }

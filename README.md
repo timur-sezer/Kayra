@@ -14,13 +14,16 @@ The top bar has three tabs: **Flight**, **Mission Plan** and **Settings**. KAYRA
 
 ### Flight
 
-- **Six gauges** in the standard cockpit layout: airspeed, attitude (artificial horizon), altitude, roll, compass and vertical speed. Each gauge has a digital readout.
+- **Default layout:** attitude indicator, Battery and Location on the left; in the center the map, the Terminal below it, and altitude, compass, roll, airspeed and vertical speed gauges in a row at the bottom; Connection and Flight Data on the right. Health is closed by default and opens as a tab behind Connection from **Windows**.
+- **Six gauges:** airspeed, attitude (artificial horizon), altitude, roll, compass and vertical speed. Each dial fills its window, and the gauge images are size-corrected so dials in equal windows match.
+- **Map:** the vehicle, its flown trail, home, the mission and the next waypoint with distance and bearing. It is read-only (plan missions in the Mission Plan tab), with **Follow** and **Fit all**.
 - **Telemetry panels:**
   - **Connection:** connection URL, connect/disconnect, status, flight mode
   - **Health:** sensor calibration, position estimates, arming, RC link
   - **Battery:** charge bar, voltage, current, consumption, temperature, time left
   - **Location:** latitude/longitude, altitude, GPS fix and satellites, velocity
   - **Flight Data:** attitude, rotation rates, airspeed, ground speed, climb rate, throttle
+- **Terminal:** everything KAYRA prints (connection and mission messages, MAVSDK's log, map tile errors), exactly as printed, in a plain scrolling window. Errors are red, warnings amber, debug lines dimmed. It sits under the map in the Flight tab, and as a tab next to Mission in the Mission Plan tab. Output still goes to the terminal KAYRA was started from.
 - **Background connection:** connecting runs off the UI thread, so the interface never freezes. The status shows *Connecting*, *Connected*, *Link lost* or *Failed*.
 - **Works without a drone:** values show `--` until data arrives. The attitude indicator runs a demo motion; right-click it for manual pitch/roll sliders.
 
@@ -35,7 +38,7 @@ Three separate windows that edit the same plan. By default **Map** and **Node ed
 
 ### Settings
 
-Theme (KAYRA Dark, ImGui Dark, Light, Classic), accent color, UI scale and corner rounding; default connection URL and connect-on-startup; map tiles, trail, follow and the tile cache; mission defaults; which windows are shown, and layout resets. Changes apply immediately and are saved automatically.
+Theme (KAYRA Dark, KAYRA Light, ImGui Dark, ImGui Classic), accent color, UI scale and corner rounding; default connection URL and connect-on-startup; map tiles, trail, follow and the tile cache; mission defaults; which windows are shown, and layout resets. Changes apply immediately and are saved automatically.
 
 ## Project structure
 
@@ -46,13 +49,16 @@ Theme (KAYRA Dark, ImGui Dark, Light, Classic), accent color, UI scale and corne
 | `Windows/Attitude_Indicator.cpp/.h` | Artificial horizon drawn with ImGui shapes (no images) |
 | `Windows/backend.cpp/.h` | MAVSDK connection, telemetry subscriptions, mission download/upload/clear; thread-safe values for the GUI |
 | `Windows/Mission_Plan.cpp/.h` | Mission Plan tab: Map, Node editor and Mission windows, plan editing |
+| `Windows/Node_Editor_View.cpp/.h` | Node editor helper that needs imgui-node-editor internals (fit to content with a zoom cap) |
 | `Windows/Mission_Export.cpp/.h` | Mission → JSON (QGroundControl `.plan` format) |
 | `Windows/File_Dialog*.{h,cpp,mm}` | Native save dialog: NSSavePanel (macOS), GetSaveFileName (Windows), zenity/kdialog (Linux) |
-| `Windows/Settings.cpp/.h` | Settings tab, settings file, theme/scale/accent styling |
+| `Windows/Settings.cpp/.h` | Settings tab and settings file |
+| `Windows/Terminal.cpp/.h` | Terminal window: captures stdout/stderr through a pipe (still echoed to the real terminal) |
+| `Windows/Theme.cpp/.h` | Design system: color tokens (dark/light), fonts, ImGui style, shared widgets (primary/danger buttons, status pills, section labels) |
 | `Windows/Widgets_Controls.cpp/.h` | Texture loading, rotated-image drawing, dark theme |
 | `Map/` | Map widget and threaded tile downloader (from [Opengl-WorldMap](https://github.com/timur-sezer/Opengl-WorldMap)) |
 | `tools/kayra_sim.cpp` | `kayra-sim`, a fake vehicle that flies a demo mission, for testing without PX4 |
-| `assets/` | Font (Open Sans) and gauge images |
+| `assets/` | Fonts (Open Sans: Regular, Medium, SemiBold) and gauge images |
 | `dependencies/` | Bundled third-party code: ImGui, imgui-node-editor, GLAD (OpenGL 3.3 loader), stb_image |
 | `docs/` | Screenshots |
 | `Dockerfile` | Ubuntu 24.04 build environment with GLFW, libcurl, OpenCV and MAVSDK |
@@ -272,11 +278,14 @@ When the simulator is running, connect KAYRA with `udpin://0.0.0.0:14540`.
 ### Windows and layout
 
 - **OPEN-WINDOW** shows or hides the windows of the current tab: gauges and telemetry in Flight; Map, Node editor and Mission in Mission Plan. A check mark means the window is open. **Reset layout** puts the tab's windows back in their default places.
+- **Hide a tab bar:** click the ▼ button at the left of any window's tab bar to hide it and give the content the full space. Click the small triangle left in the window's top-left corner to show it again.
 - Drag a window's title tab to dock it somewhere else, or drag a divider to resize. Each tab keeps its own arrangement while KAYRA runs; on the next start the default layout is used again.
 - Which windows are open is remembered. **Settings → Windows** has the same switches and the layout resets.
 
 ### Flight tab
 
+- **Terminal:** follows new output while scrolled to the bottom; scroll up to read, and it stops following until you scroll back down. It keeps the last 5,000 lines.
+- **Map:** shows the same mission as the Mission Plan tab but cannot edit it. Drag to pan, mouse wheel to zoom; **Follow** keeps the vehicle centered.
 - **Attitude test controls:** right-click the Attitude window to set pitch/roll by hand or toggle the demo motion. Live telemetry takes over automatically once connected.
 - **Gauge scales:**
   - Airspeed: 0–24 m/s
@@ -306,13 +315,14 @@ While a mission runs, yellow legs are still to fly, grey ones are done, and the 
 
 | Action | How |
 | --- | --- |
-| Reorder | Drag from a node's *Out* pin to another node's *In* pin: that node then comes right after it |
-| Edit | Altitude and hold/loiter time directly in the node |
-| Add an item | Right-click the background: waypoint, takeoff, loiter, land or return to launch (inserted after the selected item) |
+| Reorder | Drag from a node's right dot (out) to another node's left dot (in): that node then comes right after it |
+| Edit | Altitude, hold/loiter time and speed (for *Change speed*) directly in the node |
+| Add an item | **+ Add** in the toolbar, or right-click the background: waypoint, takeoff, loiter, change speed, land or return to launch (inserted after the selected item) |
+| Show on the map | Double-click a node (or right-click → *Show on map*) |
 | Move / delete an item | Right-click the node, or select it and press Delete |
-| Pan / zoom | Right-drag / mouse wheel; **Zoom to fit** shows all nodes, **Arrange** re-lays them out |
+| Pan / zoom | Right-drag / mouse wheel; **Fit** shows all nodes, **Arrange** lays them out again in rows |
 
-The node being flown to is outlined green and its incoming link animates.
+Each node shows its number, type (color-coded), position, and the leg to it from the previous point (distance and bearing). The toolbar shows the item count and the total route length, in yellow while the plan has changes that are not uploaded yet. While a mission runs, finished items are dimmed and marked **DONE**, and the item being flown to is outlined green, marked **NEXT**, and its incoming link animates. Hover **(?)** for a list of controls.
 
 #### Mission window
 
